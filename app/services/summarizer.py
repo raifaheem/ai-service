@@ -1,7 +1,9 @@
 import logging
+import time
 from typing import Optional
 
 from ..config import settings
+from ..metrics import metrics
 from .openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ async def summarize_conversation(
         conversation_text += f"{label}: {content}\n"
 
     try:
+        _start = time.perf_counter()
         resp = await client.chat.completions.create(
             model=settings.openai_model,
             messages=[
@@ -60,6 +63,20 @@ async def summarize_conversation(
             temperature=0.2,
             max_tokens=250,
         )
+        _duration_ms = round((time.perf_counter() - _start) * 1000, 1)
+        _usage = resp.usage
+        if _usage:
+            logger.info(
+                "OpenAI usage (summarizer)",
+                extra={
+                    "openai_model": resp.model,
+                    "prompt_tokens": _usage.prompt_tokens,
+                    "completion_tokens": _usage.completion_tokens,
+                    "duration_ms": _duration_ms,
+                    "call_type": "summarize",
+                },
+            )
+            metrics.record_openai_usage(_usage.prompt_tokens, _usage.completion_tokens)
         summary = (resp.choices[0].message.content or "").strip()
         return summary if summary else None
     except Exception:

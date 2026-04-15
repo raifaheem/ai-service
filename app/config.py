@@ -47,5 +47,8 @@ class Settings(BaseSettings):
     rag_score_threshold: float = Field(default=0.35, alias="RAG_SCORE_THRESHOLD")
     embedding_cache_ttl: int = Field(default=86400, alias="EMBEDDING_CACHE_TTL")
 
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    log_format: str = Field(default="text", alias="LOG_FORMAT")
+
 
 settings = Settings()

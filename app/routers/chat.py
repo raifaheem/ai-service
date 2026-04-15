@@ -2,6 +2,8 @@ import json
 import logging
 import uuid
 
+logger = logging.getLogger(__name__)
+
 from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from openai import RateLimitError, APIConnectionError, AuthenticationError, APIStatusError
@@ -18,6 +20,8 @@ from ..services.summarizer import summarize_conversation, should_summarize, get_
 from ..services.safety import detect_injection, sanitize_input, INJECTION_REFUSAL
 from ..services.content_filter import check_response_safety
 from ..services.circuit_breaker import openai_breaker, DEGRADED_MESSAGES
+from ..context import set_conversation_id, set_user_id
+from ..metrics import metrics
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -80,7 +84,7 @@ async def _get_or_create_summary(
                 await memory.set_summary(conversation_id, new_summary)
                 existing_summary = new_summary
         except Exception:
-            logging.exception("Failed to summarize conversation %s", conversation_id)
+            logger.exception("Failed to summarize conversation %s", conversation_id)
 
     return existing_summary, recent_turns
 
@@ -145,6 +149,8 @@ async def chat(
 ):
     conversation_id = req.conversation_id or str(uuid.uuid4())
     user_id = resolve_user_id(auth, x_user_id)
+    set_conversation_id(conversation_id)
+    set_user_id(user_id)
     locale = normalize_locale(req.locale)
     prof = profile_to_text(req, locale=locale)
     disclaimer = get_disclaimer(locale)
@@ -177,6 +183,7 @@ async def chat(
 
     redis_client = _get_redis_or_none()
     intent = await classify_intent(user_message, history=history, redis_client=redis_client)
+    metrics.record_intent(intent.category)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
@@ -201,8 +208,9 @@ async def chat(
             redis_client=redis_client,
         )
     except Exception:
-        logging.warning("RAG unavailable for conversation %s, proceeding without context", conversation_id)
+        logger.warning("RAG unavailable for conversation %s, proceeding without context", conversation_id)
     sources = compress_sources(rag_chunks)
+    metrics.record_rag_result(bool(rag_chunks))
 
     # Circuit breaker check
     if not openai_breaker.is_available:
@@ -248,7 +256,7 @@ async def chat(
             turn_count=len(history) + 2,
         )
     except Exception:
-        logging.exception("Failed to persist conversation %s to Redis", conversation_id)
+        logger.exception("Failed to persist conversation %s to Redis", conversation_id)
 
     return ChatResponse(
         answer=answer_to_user,
@@ -269,6 +277,8 @@ async def chat_stream(
 ):
     conversation_id = req.conversation_id or str(uuid.uuid4())
     user_id = resolve_user_id(auth, x_user_id)
+    set_conversation_id(conversation_id)
+    set_user_id(user_id)
     locale = normalize_locale(req.locale)
     prof = profile_to_text(req, locale=locale)
     disclaimer = get_disclaimer(locale)
@@ -312,6 +322,7 @@ async def chat_stream(
 
     redis_client = _get_redis_or_none()
     intent = await classify_intent(user_message, history=history, redis_client=redis_client)
+    metrics.record_intent(intent.category)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
@@ -347,8 +358,9 @@ async def chat_stream(
             redis_client=redis_client,
         )
     except Exception:
-        logging.warning("RAG unavailable for stream %s, proceeding without context", conversation_id)
+        logger.warning("RAG unavailable for stream %s, proceeding without context", conversation_id)
     sources = compress_sources(rag_chunks)
+    metrics.record_rag_result(bool(rag_chunks))
 
     # Circuit breaker check
     if not openai_breaker.is_available:
@@ -418,7 +430,7 @@ async def chat_stream(
                     turn_count=len(history) + 2,
                 )
             except Exception:
-                logging.exception("Failed to persist conversation %s to Redis", conversation_id)
+                logger.exception("Failed to persist conversation %s to Redis", conversation_id)
 
             yield _sse(
                 "final",
@@ -448,7 +460,7 @@ async def chat_stream(
                 },
             )
         except Exception as e:
-            logging.exception("Unexpected error in chat stream for %s", conversation_id)
+            logger.exception("Unexpected error in chat stream for %s", conversation_id)
             yield _sse(
                 "error",
                 {

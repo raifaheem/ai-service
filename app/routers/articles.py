@@ -1,6 +1,8 @@
 import logging
 import uuid
 
+logger = logging.getLogger(__name__)
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 
 from ..schemas_articles import ArticleAnalyzeRequest, ArticleAnalysisResponse
@@ -56,7 +58,7 @@ async def _run_article_pipeline(
             language=language,
         )
     except Exception as e:
-        logging.exception("Article analysis failed")
+        logger.exception("Article analysis failed")
         raise HTTPException(status_code=502, detail="Article analysis failed")
 
     return ArticleAnalysisResponse(

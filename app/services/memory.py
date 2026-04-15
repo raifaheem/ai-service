@@ -2,6 +2,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass
 from typing import List, Literal
 
@@ -44,7 +46,7 @@ async def get_history(conversation_id: str) -> List[Turn]:
             obj = json.loads(s)
             turns.append(Turn(role=obj["role"], content=obj["content"], ts=float(obj["ts"])))
         except Exception:
-            logging.warning("Skipping corrupt turn in conversation %s: %s", conversation_id, s[:200])
+            logger.warning("Skipping corrupt turn in conversation %s: %s", conversation_id, s[:200])
             continue
     return turns
 

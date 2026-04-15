@@ -1,8 +1,13 @@
+import logging
+import time
 from typing import Optional, List, AsyncGenerator, Dict, Any
 
 from ..config import settings
+from ..metrics import metrics
 from .i18n import get_system_prompt, get_rag_instruction, normalize_locale
 from .openai_client import client
+
+logger = logging.getLogger(__name__)
 
 
 def _build_system_prompt(
@@ -72,12 +77,30 @@ async def generate_health_answer(
         messages.extend(history)
     messages.append({"role": "user", "content": user_block})
 
+    start = time.perf_counter()
     resp = await client.chat.completions.create(
         model=settings.openai_model,
         messages=messages,
         temperature=temperature,
         max_tokens=settings.max_response_tokens,
     )
+    duration_ms = round((time.perf_counter() - start) * 1000, 1)
+
+    usage = resp.usage
+    if usage:
+        logger.info(
+            "OpenAI usage",
+            extra={
+                "openai_model": resp.model,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+                "duration_ms": duration_ms,
+                "call_type": "generate",
+            },
+        )
+        metrics.record_openai_usage(usage.prompt_tokens, usage.completion_tokens)
+
     return (resp.choices[0].message.content or "").strip()
 
 
@@ -109,6 +132,7 @@ async def stream_health_answer(
         messages.extend(history)
     messages.append({"role": "user", "content": user_block})
 
+    start = time.perf_counter()
     stream = await client.chat.completions.create(
         model=settings.openai_model,
         messages=messages,
@@ -138,7 +162,24 @@ async def stream_health_answer(
                 "total_tokens": getattr(u, "total_tokens", None),
             }
 
+    duration_ms = round((time.perf_counter() - start) * 1000, 1)
+
     if usage_dict:
+        logger.info(
+            "OpenAI usage (stream)",
+            extra={
+                "openai_model": model_name,
+                "prompt_tokens": usage_dict.get("prompt_tokens"),
+                "completion_tokens": usage_dict.get("completion_tokens"),
+                "total_tokens": usage_dict.get("total_tokens"),
+                "duration_ms": duration_ms,
+                "call_type": "stream",
+            },
+        )
+        metrics.record_openai_usage(
+            usage_dict.get("prompt_tokens", 0) or 0,
+            usage_dict.get("completion_tokens", 0) or 0,
+        )
         yield {
             "type": "usage",
             "usage": usage_dict,

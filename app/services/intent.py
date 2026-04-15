@@ -1,10 +1,12 @@
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, asdict
 from typing import Optional
 
 from ..config import settings
+from ..metrics import metrics
 from .openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,7 @@ async def classify_intent(
     messages.append({"role": "user", "content": message})
 
     try:
+        _start = time.perf_counter()
         resp = await client.chat.completions.create(
             model=settings.openai_model,
             messages=messages,
@@ -152,6 +155,20 @@ async def classify_intent(
             max_tokens=300,
             response_format={"type": "json_object"},
         )
+        _duration_ms = round((time.perf_counter() - _start) * 1000, 1)
+        _usage = resp.usage
+        if _usage:
+            logger.info(
+                "OpenAI usage (intent)",
+                extra={
+                    "openai_model": resp.model,
+                    "prompt_tokens": _usage.prompt_tokens,
+                    "completion_tokens": _usage.completion_tokens,
+                    "duration_ms": _duration_ms,
+                    "call_type": "intent_classify",
+                },
+            )
+            metrics.record_openai_usage(_usage.prompt_tokens, _usage.completion_tokens)
         raw_json = (resp.choices[0].message.content or "").strip()
         data = json.loads(raw_json)
 

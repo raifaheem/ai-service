@@ -6,6 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+from .logging_config import setup_logging
+
+setup_logging(settings.log_level, settings.log_format)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from .middleware.request_logging import RequestLoggingMiddleware
+
+app.add_middleware(RequestLoggingMiddleware)
+
 
 @app.get("/")
 async def root():
@@ -121,6 +128,28 @@ async def health():
         "version": settings.app_version,
         "checks": checks,
     }
+
+
+@app.get("/metrics")
+async def get_metrics():
+    from .metrics import metrics as app_metrics
+
+    snapshot = app_metrics.snapshot()
+
+    try:
+        r = get_redis()
+        keys = await r.keys(f"{settings.redis_prefix}:conv:*:turns")
+        snapshot["active_conversations"] = len(keys)
+    except Exception:
+        snapshot["active_conversations"] = -1
+
+    try:
+        info = await get_qdrant().get_collection(settings.qdrant_collection)
+        snapshot["qdrant_collection_size"] = info.points_count
+    except Exception:
+        snapshot["qdrant_collection_size"] = -1
+
+    return snapshot
 
 
 app.include_router(chat_router)
