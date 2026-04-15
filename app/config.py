@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         alias="OPENAI_EMBEDDING_MODEL",
     )
 
-    service_token: str = Field(..., alias="SERVICE_TOKEN")
+    service_token: str = Field(..., alias="SERVICE_TOKEN")  # comma-separated for rotation
 
     jwt_public_key: str | None = Field(default=None, alias="JWT_PUBLIC_KEY")
     jwt_alg: str = Field(default="RS256", alias="JWT_ALG")

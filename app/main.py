@@ -1,9 +1,13 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
+
 from .routers.chat import router as chat_router
 from .routers.conversations import router as conv_router
 from .routers.articles import router as articles_router
@@ -34,6 +38,11 @@ app = FastAPI(
 if settings.allowed_origins == "*":
     origins = ["*"]
     allow_credentials = False
+    if settings.app_env == "production":
+        logger.warning(
+            "CORS ALLOWED_ORIGINS is set to '*' in production. "
+            "This is insecure — set specific origins for your domain."
+        )
 else:
     origins = [o.strip() for o in settings.allowed_origins.split(",")]
     allow_credentials = True

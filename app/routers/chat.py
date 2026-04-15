@@ -15,6 +15,8 @@ from ..services.rag import build_rag_context, compress_sources
 from ..services.i18n import normalize_locale, get_disclaimer, get_prompt_addon
 from ..services.intent import classify_intent, IntentResult
 from ..services.summarizer import summarize_conversation, should_summarize, get_turns_to_summarize
+from ..services.safety import detect_injection, sanitize_input, INJECTION_REFUSAL
+from ..services.content_filter import check_response_safety
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -149,6 +151,19 @@ async def chat(
     rate_limit_id = f"user:{user_id}"
     await enforce_rate_limit(rate_limit_id)
 
+    # Safety: detect prompt injection
+    if detect_injection(req.message):
+        refusal = INJECTION_REFUSAL.get(locale, INJECTION_REFUSAL["ru"])
+        return ChatResponse(
+            answer=refusal,
+            disclaimer=disclaimer,
+            conversation_id=conversation_id,
+            rag_used=False,
+        )
+
+    # Safety: sanitize input
+    user_message = sanitize_input(req.message)
+
     if req.conversation_id:
         owner = await memory.get_owner(conversation_id)
         if owner and owner != user_id:
@@ -160,7 +175,7 @@ async def chat(
         history = [{"role": t.role, "content": t.content} for t in turns]
 
     redis_client = _get_redis_or_none()
-    intent = await classify_intent(req.message, history=history, redis_client=redis_client)
+    intent = await classify_intent(user_message, history=history, redis_client=redis_client)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
@@ -176,7 +191,7 @@ async def chat(
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
     rag_context, rag_chunks, rag_score = await build_rag_context(
-        query=req.message,
+        query=user_message,
         limit=5,
         language=locale,
         redis_client=redis_client,
@@ -185,7 +200,7 @@ async def chat(
 
     try:
         answer = await generate_health_answer(
-            req.message,
+            user_message,
             locale=locale,
             profile_text=prof,
             history=trimmed_history,
@@ -198,7 +213,8 @@ async def chat(
         status_code, message, _ = map_openai_error(e)
         raise HTTPException(status_code, message)
 
-    raw_answer = answer
+    # Content safety filter
+    raw_answer, applied_filters = check_response_safety(answer, locale=locale)
     if disclaimer.lower() not in raw_answer.lower():
         answer_to_user = f"{raw_answer}\n\n{disclaimer}"
     else:
@@ -208,7 +224,7 @@ async def chat(
         await memory.append_turns(
             conversation_id,
             [
-                memory.make_turn("user", req.message),
+                memory.make_turn("user", user_message),
                 memory.make_turn("assistant", raw_answer),
             ],
             user_id=user_id,
@@ -247,6 +263,30 @@ async def chat_stream(
     rate_limit_id = f"user:{user_id}"
     await enforce_rate_limit(rate_limit_id)
 
+    # Safety: detect prompt injection
+    if detect_injection(req.message):
+        refusal = INJECTION_REFUSAL.get(locale, INJECTION_REFUSAL["ru"])
+
+        async def injection_generator():
+            yield _sse("meta", {"conversation_id": conversation_id})
+            yield _sse("delta", {"text": refusal})
+            yield _sse("final", {
+                "conversation_id": conversation_id,
+                "answer": refusal,
+                "disclaimer": disclaimer,
+                "model": None,
+                "finish_reason": "injection_blocked",
+                "usage": None,
+                "rag_used": False,
+                "sources": [],
+            })
+
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        return StreamingResponse(injection_generator(), media_type="text/event-stream", headers=headers)
+
+    # Safety: sanitize input
+    user_message = sanitize_input(req.message)
+
     if req.conversation_id:
         owner = await memory.get_owner(conversation_id)
         if owner and owner != user_id:
@@ -258,7 +298,7 @@ async def chat_stream(
         history = [{"role": t.role, "content": t.content} for t in turns]
 
     redis_client = _get_redis_or_none()
-    intent = await classify_intent(req.message, history=history, redis_client=redis_client)
+    intent = await classify_intent(user_message, history=history, redis_client=redis_client)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
@@ -285,7 +325,7 @@ async def chat_stream(
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
     rag_context, rag_chunks, rag_score = await build_rag_context(
-        query=req.message,
+        query=user_message,
         limit=5,
         language=locale,
         redis_client=redis_client,
@@ -302,7 +342,7 @@ async def chat_stream(
 
         try:
             async for ev in stream_health_answer(
-                req.message,
+                user_message,
                 locale=locale,
                 profile_text=prof,
                 history=trimmed_history,
@@ -323,6 +363,8 @@ async def chat_stream(
                     finish_reason = ev.get("finish_reason")
 
             raw_answer = "".join(parts).strip()
+            # Content safety filter
+            raw_answer, _filters = check_response_safety(raw_answer, locale=locale)
             answer_to_user = raw_answer
             if disclaimer.lower() not in answer_to_user.lower():
                 answer_to_user = f"{answer_to_user}\n\n{disclaimer}"
@@ -331,7 +373,7 @@ async def chat_stream(
                 await memory.append_turns(
                     conversation_id,
                     [
-                        memory.make_turn("user", req.message),
+                        memory.make_turn("user", user_message),
                         memory.make_turn("assistant", raw_answer),
                     ],
                     user_id=user_id,

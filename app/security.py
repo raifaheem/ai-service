@@ -8,7 +8,8 @@ def auth_guard(
         x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
 ):
     if x_service_token:
-        if x_service_token != settings.service_token:
+        valid_tokens = {t.strip() for t in settings.service_token.split(",") if t.strip()}
+        if x_service_token not in valid_tokens:
             raise HTTPException(status_code=401, detail="Invalid service token")
         return {"auth": "service"}
 
