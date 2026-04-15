@@ -35,5 +35,8 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="medical_articles", alias="QDRANT_COLLECTION")
 
+    rag_score_threshold: float = Field(default=0.35, alias="RAG_SCORE_THRESHOLD")
+    embedding_cache_ttl: int = Field(default=86400, alias="EMBEDDING_CACHE_TTL")
+
 
 settings = Settings()

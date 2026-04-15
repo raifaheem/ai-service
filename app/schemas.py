@@ -41,5 +41,6 @@ class ChatResponse(BaseModel):
     disclaimer: str
     conversation_id: Optional[str] = None
     rag_used: bool = False
+    rag_score: Optional[float] = None
     sources: Optional[List[ChatSource]] = None
     intent: Optional[ChatIntent] = None

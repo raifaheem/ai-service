@@ -5,11 +5,15 @@ async def retrieve_context(
         query: str,
         limit: int = 5,
         language: str | None = None,
+        redis_client=None,
+        fallback_languages: list[str] | None = None,
 ) -> list[dict]:
     return await search_text_chunks(
         query=query,
         limit=limit,
         language=language,
+        redis_client=redis_client,
+        fallback_languages=fallback_languages,
     )
 
 
@@ -17,15 +21,21 @@ async def build_rag_context(
         query: str,
         limit: int = 5,
         language: str | None = None,
-) -> tuple[str, list[dict]]:
+        redis_client=None,
+        fallback_languages: list[str] | None = None,
+) -> tuple[str, list[dict], float | None]:
     chunks = await retrieve_context(
         query=query,
         limit=limit,
         language=language,
+        redis_client=redis_client,
+        fallback_languages=fallback_languages if fallback_languages is not None else ["ru", "en"],
     )
 
     if not chunks:
-        return "", []
+        return "", [], None
+
+    rag_score = sum(c["score"] for c in chunks) / len(chunks)
 
     parts: list[str] = []
     for i, chunk in enumerate(chunks, start=1):
@@ -40,7 +50,7 @@ async def build_rag_context(
             f"text: {text}"
         )
 
-    return "\n\n".join(parts), chunks
+    return "\n\n".join(parts), chunks, rag_score
 
 
 def compress_sources(chunks: list[dict]) -> list[dict]:

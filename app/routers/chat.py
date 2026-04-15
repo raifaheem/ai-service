@@ -102,10 +102,11 @@ async def chat(
 
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
-    rag_context, rag_chunks = await build_rag_context(
+    rag_context, rag_chunks, rag_score = await build_rag_context(
         query=req.message,
         limit=5,
         language=locale,
+        redis_client=redis_client,
     )
     sources = compress_sources(rag_chunks)
 
@@ -146,6 +147,7 @@ async def chat(
         disclaimer=disclaimer,
         conversation_id=conversation_id,
         rag_used=bool(rag_chunks),
+        rag_score=rag_score,
         sources=[ChatSource(**item) for item in sources] or None,
         intent=ChatIntent(category=intent.category, risk_level=intent.risk_level, confidence=intent.confidence),
     )
@@ -202,10 +204,11 @@ async def chat_stream(
 
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
-    rag_context, rag_chunks = await build_rag_context(
+    rag_context, rag_chunks, rag_score = await build_rag_context(
         query=req.message,
         limit=5,
         language=locale,
+        redis_client=redis_client,
     )
     sources = compress_sources(rag_chunks)
 
@@ -265,6 +268,7 @@ async def chat_stream(
                     "finish_reason": finish_reason,
                     "usage": usage_payload,
                     "rag_used": bool(rag_chunks),
+                    "rag_score": rag_score,
                     "sources": sources,
                     "intent": {"category": intent.category, "risk_level": intent.risk_level, "confidence": intent.confidence},
                 },
