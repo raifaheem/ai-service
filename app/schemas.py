@@ -30,9 +30,16 @@ class ChatSource(BaseModel):
     score: float
 
 
+class ChatIntent(BaseModel):
+    category: str
+    risk_level: str
+    confidence: float
+
+
 class ChatResponse(BaseModel):
     answer: str
     disclaimer: str
     conversation_id: Optional[str] = None
     rag_used: bool = False
     sources: Optional[List[ChatSource]] = None
+    intent: Optional[ChatIntent] = None

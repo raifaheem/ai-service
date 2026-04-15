@@ -6,15 +6,45 @@ from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from openai import RateLimitError, APIConnectionError, AuthenticationError, APIStatusError
 
-from ..schemas import ChatRequest, ChatResponse, ChatSource
+from ..schemas import ChatRequest, ChatResponse, ChatSource, ChatIntent
 from ..security import auth_guard, resolve_user_id
 from ..services.llm import generate_health_answer, stream_health_answer
 from ..services import memory
 from ..services.rate_limit import enforce_rate_limit
 from ..services.rag import build_rag_context, compress_sources
-from ..services.i18n import normalize_locale, get_disclaimer
+from ..services.i18n import normalize_locale, get_disclaimer, get_prompt_addon
+from ..services.intent import classify_intent, IntentResult
 
 router = APIRouter(prefix="/v1", tags=["chat"])
+
+OFF_TOPIC_MESSAGES = {
+    "ru": "Я — ассистент по здоровью и могу помочь с вопросами о здоровье, питании, физической активности, сне и ментальном благополучии. Пожалуйста, задайте вопрос, связанный со здоровьем.",
+    "en": "I'm a health assistant and can help with questions about health, nutrition, physical activity, sleep, and mental well-being. Please ask a health-related question.",
+    "kk": "Мен денсаулық көмекшісімін және денсаулық, тамақтану, дене белсенділігі, ұйқы және ментальді әл-ауқат туралы сұрақтарға көмектесе аламын. Денсаулыққа қатысты сұрақ қойыңыз.",
+}
+
+
+def _resolve_addon_prompt(intent: IntentResult, locale: str) -> str | None:
+    addon_name = intent.addon_name
+    if not addon_name:
+        return None
+    addon = get_prompt_addon(addon_name, locale)
+    if addon and intent.requires_followup:
+        followup_hint = {
+            "ru": "\nВАЖНО: Информации недостаточно. Задай пользователю уточняющие вопросы прежде чем давать рекомендации.",
+            "en": "\nIMPORTANT: Information is insufficient. Ask the user clarifying questions before giving recommendations.",
+            "kk": "\nМАҢЫЗДЫ: Ақпарат жеткіліксіз. Ұсыныстар бермес бұрын пайдаланушыға нақтылау сұрақтарын қой.",
+        }
+        addon = addon + followup_hint.get(locale, followup_hint["ru"])
+    return addon
+
+
+def _get_redis_or_none():
+    try:
+        from ..services.redis_client import get_redis
+        return get_redis()
+    except Exception:
+        return None
 
 
 def profile_to_text(req: ChatRequest) -> str | None:
@@ -57,6 +87,21 @@ async def chat(
         turns = await memory.get_history(conversation_id)
         history = [{"role": t.role, "content": t.content} for t in turns]
 
+    redis_client = _get_redis_or_none()
+    intent = await classify_intent(req.message, history=history, redis_client=redis_client)
+
+    if intent.category == "off_topic" and intent.confidence >= 0.7:
+        off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
+        return ChatResponse(
+            answer=off_topic_answer,
+            disclaimer=disclaimer,
+            conversation_id=conversation_id,
+            rag_used=False,
+            intent=ChatIntent(category=intent.category, risk_level=intent.risk_level, confidence=intent.confidence),
+        )
+
+    addon_prompt = _resolve_addon_prompt(intent, locale)
+
     rag_context, rag_chunks = await build_rag_context(
         query=req.message,
         limit=5,
@@ -71,6 +116,8 @@ async def chat(
             profile_text=prof,
             history=history,
             rag_context=rag_context,
+            addon_prompt=addon_prompt,
+            temperature=intent.temperature,
         )
     except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
         status_code, message, _ = map_openai_error(e)
@@ -100,6 +147,7 @@ async def chat(
         conversation_id=conversation_id,
         rag_used=bool(rag_chunks),
         sources=[ChatSource(**item) for item in sources] or None,
+        intent=ChatIntent(category=intent.category, risk_level=intent.risk_level, confidence=intent.confidence),
     )
 
 
@@ -128,6 +176,32 @@ async def chat_stream(
         turns = await memory.get_history(conversation_id)
         history = [{"role": t.role, "content": t.content} for t in turns]
 
+    redis_client = _get_redis_or_none()
+    intent = await classify_intent(req.message, history=history, redis_client=redis_client)
+
+    if intent.category == "off_topic" and intent.confidence >= 0.7:
+        off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
+
+        async def off_topic_generator():
+            yield _sse("meta", {"conversation_id": conversation_id})
+            yield _sse("delta", {"text": off_topic_answer})
+            yield _sse("final", {
+                "conversation_id": conversation_id,
+                "answer": off_topic_answer,
+                "disclaimer": disclaimer,
+                "model": None,
+                "finish_reason": "off_topic",
+                "usage": None,
+                "rag_used": False,
+                "sources": [],
+                "intent": {"category": intent.category, "risk_level": intent.risk_level, "confidence": intent.confidence},
+            })
+
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        return StreamingResponse(off_topic_generator(), media_type="text/event-stream", headers=headers)
+
+    addon_prompt = _resolve_addon_prompt(intent, locale)
+
     rag_context, rag_chunks = await build_rag_context(
         query=req.message,
         limit=5,
@@ -150,6 +224,8 @@ async def chat_stream(
                 profile_text=prof,
                 history=history,
                 rag_context=rag_context,
+                addon_prompt=addon_prompt,
+                temperature=intent.temperature,
             ):
                 if ev.get("type") == "delta":
                     text = ev.get("text", "")
@@ -190,6 +266,7 @@ async def chat_stream(
                     "usage": usage_payload,
                     "rag_used": bool(rag_chunks),
                     "sources": sources,
+                    "intent": {"category": intent.category, "risk_level": intent.risk_level, "confidence": intent.confidence},
                 },
             )
 

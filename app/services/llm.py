@@ -8,9 +8,16 @@ from .i18n import get_system_prompt, get_rag_instruction, normalize_locale
 client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 
-def _build_system_prompt(locale: str, rag_context: str | None = None) -> str:
+def _build_system_prompt(
+    locale: str,
+    rag_context: str | None = None,
+    addon_prompt: str | None = None,
+) -> str:
     loc = normalize_locale(locale)
     base_prompt = get_system_prompt(loc)
+
+    if addon_prompt:
+        base_prompt = base_prompt + "\n\n" + addon_prompt
 
     if not rag_context:
         return base_prompt
@@ -50,8 +57,10 @@ async def generate_health_answer(
     profile_text: Optional[str] = None,
     history: Optional[List[dict]] = None,
     rag_context: Optional[str] = None,
+    addon_prompt: Optional[str] = None,
+    temperature: float = 0.4,
 ) -> str:
-    system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context)
+    system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
         user_message=user_message,
         profile_text=profile_text,
@@ -66,7 +75,7 @@ async def generate_health_answer(
     resp = await client.chat.completions.create(
         model=settings.openai_model,
         messages=messages,
-        temperature=0.4,
+        temperature=temperature,
         max_tokens=700,
     )
     return (resp.choices[0].message.content or "").strip()
@@ -78,8 +87,10 @@ async def stream_health_answer(
     profile_text: Optional[str] = None,
     history: Optional[List[dict]] = None,
     rag_context: Optional[str] = None,
+    addon_prompt: Optional[str] = None,
+    temperature: float = 0.4,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context)
+    system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
         user_message=user_message,
         profile_text=profile_text,
@@ -98,7 +109,7 @@ async def stream_health_answer(
     stream = await client.chat.completions.create(
         model=settings.openai_model,
         messages=messages,
-        temperature=0.4,
+        temperature=temperature,
         max_tokens=700,
         stream=True,
         stream_options={"include_usage": True},
