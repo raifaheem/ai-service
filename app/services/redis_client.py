@@ -9,7 +9,11 @@ async def init_redis() -> None:
     _redis = redis.from_url(
         settings.redis_url,
         encoding="utf-8",
-        decode_responses=True,  # чтобы получать str, а не bytes
+        decode_responses=True,
+        max_connections=settings.redis_max_connections,
+        retry_on_timeout=True,
+        socket_timeout=settings.redis_socket_timeout,
+        socket_connect_timeout=settings.redis_socket_timeout,
     )
     # Проверка соединения (fail fast)
     await _redis.ping()

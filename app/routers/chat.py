@@ -17,6 +17,7 @@ from ..services.intent import classify_intent, IntentResult
 from ..services.summarizer import summarize_conversation, should_summarize, get_turns_to_summarize
 from ..services.safety import detect_injection, sanitize_input, INJECTION_REFUSAL
 from ..services.content_filter import check_response_safety
+from ..services.circuit_breaker import openai_breaker, DEGRADED_MESSAGES
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -190,13 +191,23 @@ async def chat(
     summary, trimmed_history = await _get_or_create_summary(conversation_id, history, locale)
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
-    rag_context, rag_chunks, rag_score = await build_rag_context(
-        query=user_message,
-        limit=5,
-        language=locale,
-        redis_client=redis_client,
-    )
+    # RAG with fallback
+    rag_context, rag_chunks, rag_score = "", [], None
+    try:
+        rag_context, rag_chunks, rag_score = await build_rag_context(
+            query=user_message,
+            limit=5,
+            language=locale,
+            redis_client=redis_client,
+        )
+    except Exception:
+        logging.warning("RAG unavailable for conversation %s, proceeding without context", conversation_id)
     sources = compress_sources(rag_chunks)
+
+    # Circuit breaker check
+    if not openai_breaker.is_available:
+        degraded = DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"])
+        raise HTTPException(status_code=503, detail=degraded)
 
     try:
         answer = await generate_health_answer(
@@ -209,7 +220,9 @@ async def chat(
             temperature=intent.temperature,
             summary=summary,
         )
+        openai_breaker.record_success()
     except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
+        openai_breaker.record_failure()
         status_code, message, _ = map_openai_error(e)
         raise HTTPException(status_code, message)
 
@@ -324,13 +337,33 @@ async def chat_stream(
     summary, trimmed_history = await _get_or_create_summary(conversation_id, history, locale)
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
-    rag_context, rag_chunks, rag_score = await build_rag_context(
-        query=user_message,
-        limit=5,
-        language=locale,
-        redis_client=redis_client,
-    )
+    # RAG with fallback
+    rag_context, rag_chunks, rag_score = "", [], None
+    try:
+        rag_context, rag_chunks, rag_score = await build_rag_context(
+            query=user_message,
+            limit=5,
+            language=locale,
+            redis_client=redis_client,
+        )
+    except Exception:
+        logging.warning("RAG unavailable for stream %s, proceeding without context", conversation_id)
     sources = compress_sources(rag_chunks)
+
+    # Circuit breaker check
+    if not openai_breaker.is_available:
+        degraded = DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"])
+
+        async def degraded_generator():
+            yield _sse("meta", {"conversation_id": conversation_id})
+            yield _sse("error", {
+                "conversation_id": conversation_id,
+                "code": "service_degraded",
+                "message": degraded,
+            })
+
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        return StreamingResponse(degraded_generator(), media_type="text/event-stream", headers=headers)
 
     async def event_generator():
         yield _sse("meta", {"conversation_id": conversation_id})
@@ -362,6 +395,7 @@ async def chat_stream(
                     model_name = ev.get("model")
                     finish_reason = ev.get("finish_reason")
 
+            openai_breaker.record_success()
             raw_answer = "".join(parts).strip()
             # Content safety filter
             raw_answer, _filters = check_response_safety(raw_answer, locale=locale)
@@ -403,6 +437,7 @@ async def chat_stream(
             )
 
         except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
+            openai_breaker.record_failure()
             _, message, code = map_openai_error(e)
             yield _sse(
                 "error",

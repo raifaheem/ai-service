@@ -4,13 +4,10 @@ import logging
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-from openai import AsyncOpenAI
-
 from ..config import settings
+from .openai_client import client
 
 logger = logging.getLogger(__name__)
-
-client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 VALID_CATEGORIES = {
     "symptom_check",

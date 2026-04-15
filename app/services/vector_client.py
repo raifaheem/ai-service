@@ -10,6 +10,7 @@ async def init_qdrant() -> None:
     _qdrant = AsyncQdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key or None,
+        timeout=settings.qdrant_timeout,
     )
 
     # fail fast: если Qdrant недоступен, приложение не должно тихо стартовать

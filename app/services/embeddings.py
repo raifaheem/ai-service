@@ -2,12 +2,10 @@ import hashlib
 import json
 import logging
 
-from openai import AsyncOpenAI
 from ..config import settings
+from .openai_client import client
 
 logger = logging.getLogger(__name__)
-
-client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 EMBEDDING_DIMENSIONS = {
     "text-embedding-3-small": 1536,

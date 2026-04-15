@@ -1,11 +1,8 @@
 from typing import Optional, List, AsyncGenerator, Dict, Any
 
-from openai import AsyncOpenAI
-
 from ..config import settings
 from .i18n import get_system_prompt, get_rag_instruction, normalize_locale
-
-client = AsyncOpenAI(api_key=settings.openai_api_key)
+from .openai_client import client
 
 
 def _build_system_prompt(
@@ -79,7 +76,7 @@ async def generate_health_answer(
         model=settings.openai_model,
         messages=messages,
         temperature=temperature,
-        max_tokens=700,
+        max_tokens=settings.max_response_tokens,
     )
     return (resp.choices[0].message.content or "").strip()
 
@@ -116,7 +113,7 @@ async def stream_health_answer(
         model=settings.openai_model,
         messages=messages,
         temperature=temperature,
-        max_tokens=700,
+        max_tokens=settings.max_response_tokens,
         stream=True,
         stream_options={"include_usage": True},
     )

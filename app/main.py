@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,20 @@ from .services.redis_client import init_redis, close_redis, get_redis
 from .services.vector_client import init_qdrant, close_qdrant, get_qdrant
 from .services.vector_store import ensure_qdrant_collection
 
+# Track active streaming connections for graceful shutdown
+_active_streams: set[asyncio.Task] = set()
+_shutdown_event = asyncio.Event()
+_SHUTDOWN_TIMEOUT = 30
+
+
+def register_stream(task: asyncio.Task) -> None:
+    _active_streams.add(task)
+    task.add_done_callback(_active_streams.discard)
+
+
+def is_shutting_down() -> bool:
+    return _shutdown_event.is_set()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,6 +40,14 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        _shutdown_event.set()
+        if _active_streams:
+            logger.info("Waiting for %d active streams to finish (timeout=%ds)", len(_active_streams), _SHUTDOWN_TIMEOUT)
+            _, pending = await asyncio.wait(_active_streams, timeout=_SHUTDOWN_TIMEOUT)
+            if pending:
+                logger.warning("Force-cancelling %d streams after shutdown timeout", len(pending))
+                for task in pending:
+                    task.cancel()
         await close_qdrant()
         await close_redis()
 
@@ -68,6 +91,8 @@ async def root():
 
 @app.get("/health")
 async def health():
+    from .services.circuit_breaker import openai_breaker, qdrant_breaker
+
     checks = {}
     status = "ok"
 
@@ -83,6 +108,11 @@ async def health():
         checks["qdrant"] = "ok"
     except Exception:
         checks["qdrant"] = "unavailable"
+        status = "degraded"
+
+    checks["openai_circuit"] = openai_breaker.state
+    checks["qdrant_circuit"] = qdrant_breaker.state
+    if openai_breaker.state == "open":
         status = "degraded"
 
     return {

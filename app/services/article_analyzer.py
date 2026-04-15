@@ -1,10 +1,8 @@
 import json
-from openai import AsyncOpenAI
 
 from ..config import settings
 from .i18n import normalize_locale
-
-client = AsyncOpenAI(api_key=settings.openai_api_key)
+from .openai_client import client
 
 
 def build_article_analysis_prompt(title: str, text: str, language: str) -> str:

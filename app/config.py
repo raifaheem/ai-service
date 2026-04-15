@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="medical_articles", alias="QDRANT_COLLECTION")
 
+    qdrant_timeout: int = Field(default=10, alias="QDRANT_TIMEOUT")
+
+    openai_timeout: int = Field(default=30, alias="OPENAI_TIMEOUT_SECONDS")
+    openai_max_retries: int = Field(default=3, alias="OPENAI_MAX_RETRIES")
+    max_response_tokens: int = Field(default=1000, alias="MAX_RESPONSE_TOKENS")
+
+    redis_max_connections: int = Field(default=20, alias="REDIS_MAX_CONNECTIONS")
+    redis_socket_timeout: int = Field(default=5, alias="REDIS_SOCKET_TIMEOUT")
+
     rag_score_threshold: float = Field(default=0.35, alias="RAG_SCORE_THRESHOLD")
     embedding_cache_ttl: int = Field(default=86400, alias="EMBEDDING_CACHE_TTL")
 
