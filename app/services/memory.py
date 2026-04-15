@@ -26,6 +26,14 @@ def _owner_key(conversation_id: str) -> str:
     return f"{settings.redis_prefix}:conv:{conversation_id}:owner"
 
 
+def _summary_key(conversation_id: str) -> str:
+    return f"{settings.redis_prefix}:conv:{conversation_id}:summary"
+
+
+def _meta_key(conversation_id: str) -> str:
+    return f"{settings.redis_prefix}:conv:{conversation_id}:meta"
+
+
 async def get_history(conversation_id: str) -> List[Turn]:
     r = get_redis()
     key = _key(conversation_id)
@@ -79,12 +87,57 @@ async def get_owner(conversation_id: str) -> str | None:
     return val
 
 
-async def delete_conversation(conversation_id: str) -> int:
-    r = get_redis()
-    return await r.delete(_key(conversation_id), _owner_key(conversation_id))
-
-
 async def get_ttl(conversation_id: str) -> int:
     r = get_redis()
     key = _key(conversation_id)
     return await r.ttl(key)  # -1 нет TTL, -2 ключа нет, иначе секунды
+
+
+# --------------- Summary ---------------
+
+async def get_summary(conversation_id: str) -> str | None:
+    r = get_redis()
+    return await r.get(_summary_key(conversation_id))
+
+
+async def set_summary(conversation_id: str, summary: str) -> None:
+    r = get_redis()
+    ttl = int(settings.redis_ttl_seconds)
+    await r.set(_summary_key(conversation_id), summary, ex=ttl)
+
+
+# --------------- Conversation Metadata ---------------
+
+async def get_metadata(conversation_id: str) -> dict | None:
+    r = get_redis()
+    raw = await r.get(_meta_key(conversation_id))
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+    return None
+
+
+async def set_metadata(conversation_id: str, metadata: dict) -> None:
+    r = get_redis()
+    ttl = int(settings.redis_ttl_seconds)
+    await r.set(_meta_key(conversation_id), json.dumps(metadata, ensure_ascii=False), ex=ttl)
+
+
+async def update_metadata(conversation_id: str, **kwargs) -> dict:
+    """Update specific fields in conversation metadata, creating if needed."""
+    meta = await get_metadata(conversation_id) or {}
+    meta.update(kwargs)
+    await set_metadata(conversation_id, meta)
+    return meta
+
+
+async def delete_conversation(conversation_id: str) -> int:
+    r = get_redis()
+    return await r.delete(
+        _key(conversation_id),
+        _owner_key(conversation_id),
+        _summary_key(conversation_id),
+        _meta_key(conversation_id),
+    )

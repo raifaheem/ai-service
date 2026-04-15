@@ -7,6 +7,11 @@ class UserProfile(BaseModel):
     sex: Optional[Literal["male", "female", "other"]] = None
     conditions: Optional[List[str]] = None
     goals: Optional[List[str]] = None
+    allergies: Optional[List[str]] = None
+    medications: Optional[List[str]] = None
+    height_cm: Optional[int] = Field(default=None, ge=50, le=300)
+    weight_kg: Optional[float] = Field(default=None, ge=1, le=500)
+    activity_level: Optional[Literal["sedentary", "light", "moderate", "active"]] = None
 
 
 class HistoryTurn(BaseModel):

@@ -29,6 +29,30 @@ async def get_conversation(
     }
 
 
+@router.get("/{conversation_id}/metadata")
+async def get_conversation_metadata(
+    conversation_id: str,
+    auth=Depends(auth_guard),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+):
+    user_id = resolve_user_id(auth, x_user_id)
+
+    owner = await memory.get_owner(conversation_id)
+    if owner and owner != user_id:
+        raise HTTPException(status_code=403, detail="Access denied to this conversation")
+
+    meta = await memory.get_metadata(conversation_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Conversation metadata not found")
+
+    ttl = await memory.get_ttl(conversation_id)
+    return {
+        "conversation_id": conversation_id,
+        "ttl_seconds": ttl,
+        **meta,
+    }
+
+
 @router.delete("/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,

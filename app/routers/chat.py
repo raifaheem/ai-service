@@ -14,6 +14,7 @@ from ..services.rate_limit import enforce_rate_limit
 from ..services.rag import build_rag_context, compress_sources
 from ..services.i18n import normalize_locale, get_disclaimer, get_prompt_addon
 from ..services.intent import classify_intent, IntentResult
+from ..services.summarizer import summarize_conversation, should_summarize, get_turns_to_summarize
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -47,18 +48,89 @@ def _get_redis_or_none():
         return None
 
 
-def profile_to_text(req: ChatRequest) -> str | None:
+async def _get_or_create_summary(
+    conversation_id: str,
+    history: list[dict],
+    locale: str,
+) -> tuple[str | None, list[dict]]:
+    """Get existing summary or create one if conversation is long enough.
+
+    Returns (summary, trimmed_history) where trimmed_history contains
+    only the recent turns to send to the LLM.
+    """
+    if not should_summarize(len(history)):
+        return None, history
+
+    # Check for existing summary
+    existing_summary = None
+    try:
+        existing_summary = await memory.get_summary(conversation_id)
+    except Exception:
+        pass
+
+    old_turns, recent_turns = get_turns_to_summarize(history)
+
+    if not existing_summary and old_turns:
+        try:
+            new_summary = await summarize_conversation(old_turns, locale=locale)
+            if new_summary:
+                await memory.set_summary(conversation_id, new_summary)
+                existing_summary = new_summary
+        except Exception:
+            logging.exception("Failed to summarize conversation %s", conversation_id)
+
+    return existing_summary, recent_turns
+
+
+_PROFILE_LABELS = {
+    "ru": {
+        "age": "Возраст", "sex": "Пол", "conditions": "Хронические/особенности",
+        "goals": "Цели", "allergies": "Аллергии", "medications": "Принимаемые препараты",
+        "height": "Рост (см)", "weight": "Вес (кг)", "activity": "Уровень активности",
+        "bmi": "ИМТ",
+    },
+    "en": {
+        "age": "Age", "sex": "Sex", "conditions": "Chronic conditions",
+        "goals": "Goals", "allergies": "Allergies", "medications": "Current medications",
+        "height": "Height (cm)", "weight": "Weight (kg)", "activity": "Activity level",
+        "bmi": "BMI",
+    },
+    "kk": {
+        "age": "Жасы", "sex": "Жынысы", "conditions": "Созылмалы аурулар",
+        "goals": "Мақсаттар", "allergies": "Аллергиялар", "medications": "Қабылдайтын дәрілер",
+        "height": "Бойы (см)", "weight": "Салмағы (кг)", "activity": "Белсенділік деңгейі",
+        "bmi": "ДСИ",
+    },
+}
+
+
+def profile_to_text(req: ChatRequest, locale: str = "ru") -> str | None:
     if not req.profile:
         return None
+    p = req.profile
+    labels = _PROFILE_LABELS.get(locale, _PROFILE_LABELS["ru"])
     parts = []
-    if req.profile.age is not None:
-        parts.append(f"Возраст: {req.profile.age}")
-    if req.profile.sex:
-        parts.append(f"Пол: {req.profile.sex}")
-    if req.profile.conditions:
-        parts.append("Хронические/особенности: " + ", ".join(req.profile.conditions))
-    if req.profile.goals:
-        parts.append("Цели: " + ", ".join(req.profile.goals))
+    if p.age is not None:
+        parts.append(f"{labels['age']}: {p.age}")
+    if p.sex:
+        parts.append(f"{labels['sex']}: {p.sex}")
+    if p.height_cm is not None:
+        parts.append(f"{labels['height']}: {p.height_cm}")
+    if p.weight_kg is not None:
+        parts.append(f"{labels['weight']}: {p.weight_kg}")
+    if p.height_cm and p.weight_kg:
+        bmi = round(p.weight_kg / ((p.height_cm / 100) ** 2), 1)
+        parts.append(f"{labels['bmi']}: {bmi}")
+    if p.activity_level:
+        parts.append(f"{labels['activity']}: {p.activity_level}")
+    if p.conditions:
+        parts.append(f"{labels['conditions']}: " + ", ".join(p.conditions))
+    if p.allergies:
+        parts.append(f"{labels['allergies']}: " + ", ".join(p.allergies))
+    if p.medications:
+        parts.append(f"{labels['medications']}: " + ", ".join(p.medications))
+    if p.goals:
+        parts.append(f"{labels['goals']}: " + ", ".join(p.goals))
     return "; ".join(parts) if parts else None
 
 
@@ -70,8 +142,8 @@ async def chat(
 ):
     conversation_id = req.conversation_id or str(uuid.uuid4())
     user_id = resolve_user_id(auth, x_user_id)
-    prof = profile_to_text(req)
     locale = normalize_locale(req.locale)
+    prof = profile_to_text(req, locale=locale)
     disclaimer = get_disclaimer(locale)
 
     rate_limit_id = f"user:{user_id}"
@@ -100,6 +172,7 @@ async def chat(
             intent=ChatIntent(category=intent.category, risk_level=intent.risk_level, confidence=intent.confidence),
         )
 
+    summary, trimmed_history = await _get_or_create_summary(conversation_id, history, locale)
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
     rag_context, rag_chunks, rag_score = await build_rag_context(
@@ -115,10 +188,11 @@ async def chat(
             req.message,
             locale=locale,
             profile_text=prof,
-            history=history,
+            history=trimmed_history,
             rag_context=rag_context,
             addon_prompt=addon_prompt,
             temperature=intent.temperature,
+            summary=summary,
         )
     except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
         status_code, message, _ = map_openai_error(e)
@@ -138,6 +212,11 @@ async def chat(
                 memory.make_turn("assistant", raw_answer),
             ],
             user_id=user_id,
+        )
+        await memory.update_metadata(
+            conversation_id,
+            topic=intent.category,
+            turn_count=len(history) + 2,
         )
     except Exception:
         logging.exception("Failed to persist conversation %s to Redis", conversation_id)
@@ -161,8 +240,8 @@ async def chat_stream(
 ):
     conversation_id = req.conversation_id or str(uuid.uuid4())
     user_id = resolve_user_id(auth, x_user_id)
-    prof = profile_to_text(req)
     locale = normalize_locale(req.locale)
+    prof = profile_to_text(req, locale=locale)
     disclaimer = get_disclaimer(locale)
 
     rate_limit_id = f"user:{user_id}"
@@ -202,6 +281,7 @@ async def chat_stream(
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         return StreamingResponse(off_topic_generator(), media_type="text/event-stream", headers=headers)
 
+    summary, trimmed_history = await _get_or_create_summary(conversation_id, history, locale)
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
     rag_context, rag_chunks, rag_score = await build_rag_context(
@@ -225,10 +305,11 @@ async def chat_stream(
                 req.message,
                 locale=locale,
                 profile_text=prof,
-                history=history,
+                history=trimmed_history,
                 rag_context=rag_context,
                 addon_prompt=addon_prompt,
                 temperature=intent.temperature,
+                summary=summary,
             ):
                 if ev.get("type") == "delta":
                     text = ev.get("text", "")
@@ -254,6 +335,11 @@ async def chat_stream(
                         memory.make_turn("assistant", raw_answer),
                     ],
                     user_id=user_id,
+                )
+                await memory.update_metadata(
+                    conversation_id,
+                    topic=intent.category,
+                    turn_count=len(history) + 2,
                 )
             except Exception:
                 logging.exception("Failed to persist conversation %s to Redis", conversation_id)

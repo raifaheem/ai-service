@@ -59,6 +59,7 @@ async def generate_health_answer(
     rag_context: Optional[str] = None,
     addon_prompt: Optional[str] = None,
     temperature: float = 0.4,
+    summary: Optional[str] = None,
 ) -> str:
     system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
@@ -68,6 +69,8 @@ async def generate_health_answer(
     )
 
     messages = [{"role": "system", "content": system_prompt}]
+    if summary:
+        messages.append({"role": "system", "content": f"Previous conversation summary:\n{summary}"})
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_block})
@@ -89,6 +92,7 @@ async def stream_health_answer(
     rag_context: Optional[str] = None,
     addon_prompt: Optional[str] = None,
     temperature: float = 0.4,
+    summary: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
@@ -102,6 +106,8 @@ async def stream_health_answer(
     usage_dict: Optional[dict] = None
 
     messages = [{"role": "system", "content": system_prompt}]
+    if summary:
+        messages.append({"role": "system", "content": f"Previous conversation summary:\n{summary}"})
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_block})
