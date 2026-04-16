@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,7 @@ Returns the assistant's answer with disclaimer, intent, and RAG sources.
 """
 
 
-_CHAT_RESPONSES = {
+_CHAT_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"description": "Input validation failed (e.g., message too long, metadata over 5 KB)."},
     401: {"description": "Missing or invalid authentication (JWT or `X-Service-Token`)."},
     403: {"description": "`conversation_id` belongs to a different user."},
@@ -252,7 +253,9 @@ async def chat(
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
     # RAG with fallback
-    rag_context, rag_chunks, rag_score = "", [], None
+    rag_context: str = ""
+    rag_chunks: list[dict] = []
+    rag_score: float | None = None
     try:
         rag_context, rag_chunks, rag_score = await build_rag_context(
             query=user_message,
@@ -451,7 +454,9 @@ async def chat_stream(
     addon_prompt = _resolve_addon_prompt(intent, locale)
 
     # RAG with fallback
-    rag_context, rag_chunks, rag_score = "", [], None
+    rag_context: str = ""
+    rag_chunks: list[dict] = []
+    rag_score: float | None = None
     try:
         rag_context, rag_chunks, rag_score = await build_rag_context(
             query=user_message,

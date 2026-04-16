@@ -3,6 +3,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass
+from typing import Any, cast
 
 from ..config import settings
 from ..metrics import metrics
@@ -140,7 +141,7 @@ async def classify_intent(
         if cached:
             return cached
 
-    messages = [{"role": "system", "content": CLASSIFY_SYSTEM_PROMPT}]
+    messages: list[Any] = [{"role": "system", "content": CLASSIFY_SYSTEM_PROMPT}]
     if history_tail:
         messages.extend(history_tail)
     messages.append({"role": "user", "content": message})
@@ -152,7 +153,7 @@ async def classify_intent(
             messages=messages,
             temperature=0.1,
             max_tokens=300,
-            response_format={"type": "json_object"},
+            response_format=cast(Any, {"type": "json_object"}),
         )
         _duration_ms = round((time.perf_counter() - _start) * 1000, 1)
         _usage = resp.usage

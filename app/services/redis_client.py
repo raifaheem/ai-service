@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import redis.asyncio as redis
 from redis.asyncio import Redis
 
@@ -17,8 +19,9 @@ async def init_redis() -> None:
         socket_timeout=settings.redis_socket_timeout,
         socket_connect_timeout=settings.redis_socket_timeout,
     )
-    # Проверка соединения (fail fast)
-    await _redis.ping()
+    # Проверка соединения (fail fast). Cast: redis-py async stubs declare
+    # ping() as `Awaitable[bool] | bool`, which mypy can't await directly.
+    await cast(Any, _redis.ping())
 
 
 async def close_redis() -> None:

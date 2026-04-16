@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 
 from ..security import auth_guard, resolve_user_id
@@ -6,7 +8,7 @@ from ..services import memory
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
 
-_OWNER_RESPONSES = {
+_OWNER_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"description": "Missing or invalid authentication."},
     403: {"description": "Conversation belongs to a different user."},
     404: {"description": "Conversation not found or expired."},

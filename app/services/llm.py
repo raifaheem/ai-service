@@ -1,7 +1,7 @@
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 from ..config import settings
 from ..metrics import metrics
@@ -70,7 +70,7 @@ async def generate_health_answer(
         locale=locale,
     )
 
-    messages = [{"role": "system", "content": system_prompt}]
+    messages: list[Any] = [{"role": "system", "content": system_prompt}]
     if summary:
         messages.append({"role": "system", "content": f"Previous conversation summary:\n{summary}"})
     if history:
@@ -125,7 +125,7 @@ async def stream_health_answer(
     finish_reason: str | None = None
     usage_dict: dict | None = None
 
-    messages = [{"role": "system", "content": system_prompt}]
+    messages: list[Any] = [{"role": "system", "content": system_prompt}]
     if summary:
         messages.append({"role": "system", "content": f"Previous conversation summary:\n{summary}"})
     if history:
@@ -139,7 +139,7 @@ async def stream_health_answer(
         temperature=temperature,
         max_tokens=settings.max_response_tokens,
         stream=True,
-        stream_options={"include_usage": True},
+        stream_options=cast(Any, {"include_usage": True}),
     )
 
     async for chunk in stream:

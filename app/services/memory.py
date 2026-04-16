@@ -6,7 +6,7 @@ import time
 
 logger = logging.getLogger(__name__)
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, cast
 
 from ..config import settings
 from .redis_client import get_redis
@@ -40,7 +40,8 @@ def _meta_key(conversation_id: str) -> str:
 async def get_history(conversation_id: str) -> list[Turn]:
     r = get_redis()
     key = _key(conversation_id)
-    items = await r.lrange(key, 0, -1)  # старое -> новое
+    # Cast: redis-py async stubs declare lrange() as `Awaitable[list] | list`.
+    items: list[str] = await cast(Any, r.lrange(key, 0, -1))  # старое -> новое
     turns: list[Turn] = []
     for s in items:
         try:
