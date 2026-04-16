@@ -2,15 +2,16 @@ import uuid
 
 from qdrant_client.models import (
     Distance,
-    VectorParams,
-    PointStruct,
-    Filter,
     FieldCondition,
+    Filter,
+    FilterSelector,
     MatchValue,
+    PointStruct,
+    VectorParams,
 )
 
 from ..config import settings
-from .embeddings import get_embedding_dimension, embed_text, embed_texts
+from .embeddings import embed_text, embed_texts, get_embedding_dimension
 from .vector_client import get_qdrant
 
 
@@ -63,7 +64,7 @@ async def upsert_text_chunks(chunks: list[dict], redis_client=None) -> int:
     vectors = await embed_texts(texts, redis_client=redis_client)
 
     points: list[PointStruct] = []
-    for chunk, vector in zip(valid_chunks, vectors):
+    for chunk, vector in zip(valid_chunks, vectors, strict=False):
         payload = {
             "text": chunk["text"],
             "source_id": chunk["source_id"],
@@ -104,6 +105,80 @@ def _qdrant_results_to_items(results) -> list[dict]:
             }
         )
     return items
+
+
+async def collect_corpus_stats(scroll_batch: int = 256) -> dict:
+    """Scroll the whole collection and aggregate chunk + source counts per language.
+
+    Intended for the dev `/v1/rag/stats` endpoint. O(n) in corpus size — fine at
+    phase-12 scale (hundreds of chunks); swap to per-language `count()` calls if
+    the corpus ever grows past a few thousand points.
+    """
+    client = get_qdrant()
+
+    by_language: dict[str, int] = {}
+    sources_by_language: dict[str, set[str]] = {}
+    all_sources: set[str] = set()
+    total = 0
+
+    offset = None
+    while True:
+        points, next_offset = await client.scroll(
+            collection_name=settings.qdrant_collection,
+            limit=scroll_batch,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for point in points:
+            payload = point.payload or {}
+            lang = payload.get("language") or "unknown"
+            source_id = payload.get("source_id") or ""
+
+            by_language[lang] = by_language.get(lang, 0) + 1
+            if source_id:
+                sources_by_language.setdefault(lang, set()).add(source_id)
+                all_sources.add(source_id)
+            total += 1
+
+        if not next_offset:
+            break
+        offset = next_offset
+
+    return {
+        "collection": settings.qdrant_collection,
+        "total_chunks": total,
+        "total_sources": len(all_sources),
+        "by_language": by_language,
+        "sources_by_language": {lang: len(ids) for lang, ids in sources_by_language.items()},
+    }
+
+
+async def delete_chunks_by_source(source_id: str) -> int:
+    """Remove every point with `payload.source_id == source_id`. Returns the number of points deleted.
+
+    Qdrant's delete-by-filter doesn't report a count directly, so we count matching
+    points via `count()` before issuing the delete.
+    """
+    client = get_qdrant()
+
+    filt = Filter(must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))])
+
+    count_result = await client.count(
+        collection_name=settings.qdrant_collection,
+        count_filter=filt,
+        exact=True,
+    )
+    matched = int(getattr(count_result, "count", 0) or 0)
+
+    if matched == 0:
+        return 0
+
+    await client.delete(
+        collection_name=settings.qdrant_collection,
+        points_selector=FilterSelector(filter=filt),
+    )
+    return matched
 
 
 async def search_text_chunks(

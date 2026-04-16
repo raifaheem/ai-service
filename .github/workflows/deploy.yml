@@ -1,0 +1,66 @@
+name: Deploy
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-and-publish:
+    name: Build + push image to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test built image
+        run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          docker run -d --name smoke -p 8001:8001 \
+            -e APP_ENV=production \
+            -e OPENAI_API_KEY=ci-smoke \
+            -e SERVICE_TOKEN=ci-smoke \
+            -e ENABLE_DEV_ROUTES=false \
+            "$IMAGE"
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health || echo 000)
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              echo "smoke OK (HTTP $code)"
+              docker stop smoke
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "smoke FAILED — container did not respond on /health"
+          docker logs smoke
+          exit 1

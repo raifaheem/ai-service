@@ -1,11 +1,12 @@
 from __future__ import annotations
+
 import json
 import logging
 import time
 
 logger = logging.getLogger(__name__)
 from dataclasses import dataclass
-from typing import List, Literal
+from typing import Literal
 
 from ..config import settings
 from .redis_client import get_redis
@@ -36,11 +37,11 @@ def _meta_key(conversation_id: str) -> str:
     return f"{settings.redis_prefix}:conv:{conversation_id}:meta"
 
 
-async def get_history(conversation_id: str) -> List[Turn]:
+async def get_history(conversation_id: str) -> list[Turn]:
     r = get_redis()
     key = _key(conversation_id)
     items = await r.lrange(key, 0, -1)  # старое -> новое
-    turns: List[Turn] = []
+    turns: list[Turn] = []
     for s in items:
         try:
             obj = json.loads(s)
@@ -53,7 +54,7 @@ async def get_history(conversation_id: str) -> List[Turn]:
 
 async def append_turns(
     conversation_id: str,
-    turns: List[Turn],
+    turns: list[Turn],
     user_id: str | None = None,
 ) -> None:
     if not turns:
@@ -97,6 +98,7 @@ async def get_ttl(conversation_id: str) -> int:
 
 # --------------- Summary ---------------
 
+
 async def get_summary(conversation_id: str) -> str | None:
     r = get_redis()
     return await r.get(_summary_key(conversation_id))
@@ -109,6 +111,7 @@ async def set_summary(conversation_id: str, summary: str) -> None:
 
 
 # --------------- Conversation Metadata ---------------
+
 
 async def get_metadata(conversation_id: str) -> dict | None:
     r = get_redis()

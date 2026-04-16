@@ -1,5 +1,4 @@
 import re
-from typing import List
 
 
 def normalize_article_text(text: str) -> str:
@@ -9,7 +8,7 @@ def normalize_article_text(text: str) -> str:
     return text.strip()
 
 
-def split_into_paragraphs(text: str) -> List[str]:
+def split_into_paragraphs(text: str) -> list[str]:
     normalized = normalize_article_text(text)
     paragraphs = [p.strip() for p in normalized.split("\n\n")]
     return [p for p in paragraphs if p]
@@ -23,16 +22,14 @@ def _is_header(line: str) -> bool:
         return True
     if stripped.isupper() and len(stripped) > 3:
         return True
-    if stripped.endswith(":") and len(stripped) < 100 and "\n" not in stripped:
-        return True
-    return False
+    return bool(stripped.endswith(":") and len(stripped) < 100 and "\n" not in stripped)
 
 
 def chunk_article_text(
     text: str,
     chunk_size: int = 1000,
     overlap: int = 200,
-) -> List[str]:
+) -> list[str]:
     normalized = normalize_article_text(text)
 
     if len(normalized) <= chunk_size:
@@ -40,8 +37,8 @@ def chunk_article_text(
 
     paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
 
-    chunks: List[str] = []
-    current_parts: List[str] = []
+    chunks: list[str] = []
+    current_parts: list[str] = []
     current_len = 0
 
     for para in paragraphs:
@@ -94,7 +91,7 @@ def chunk_article_with_headers(
     text: str,
     chunk_size: int = 1000,
     overlap: int = 200,
-) -> List[dict]:
+) -> list[dict]:
     normalized = normalize_article_text(text)
 
     if not normalized:
@@ -102,8 +99,8 @@ def chunk_article_with_headers(
 
     paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
 
-    chunks: List[dict] = []
-    current_parts: List[str] = []
+    chunks: list[dict] = []
+    current_parts: list[str] = []
     current_len = 0
     current_header: str | None = None
 

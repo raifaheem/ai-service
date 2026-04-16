@@ -16,7 +16,9 @@ class CircuitBreaker:
     - half_open: recovery window expired, allow one test request
     """
 
-    def __init__(self, name: str, failure_threshold: int = _FAILURE_THRESHOLD, recovery_timeout: int = _RECOVERY_TIMEOUT):
+    def __init__(
+        self, name: str, failure_threshold: int = _FAILURE_THRESHOLD, recovery_timeout: int = _RECOVERY_TIMEOUT
+    ):
         self.name = name
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
@@ -26,9 +28,8 @@ class CircuitBreaker:
 
     @property
     def state(self) -> str:
-        if self._state == "open":
-            if time.monotonic() - self._last_failure_time >= self.recovery_timeout:
-                self._state = "half_open"
+        if self._state == "open" and time.monotonic() - self._last_failure_time >= self.recovery_timeout:
+            self._state = "half_open"
         return self._state
 
     @property
@@ -48,7 +49,8 @@ class CircuitBreaker:
             if self._state != "open":
                 logger.warning(
                     "Circuit breaker '%s' opened after %d failures",
-                    self.name, self._failure_count,
+                    self.name,
+                    self._failure_count,
                 )
             self._state = "open"
 

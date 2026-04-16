@@ -1,11 +1,27 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, Header, HTTPException
+
 from ..security import auth_guard, resolve_user_id
 from ..services import memory
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
 
-@router.get("/{conversation_id}")
+_OWNER_RESPONSES = {
+    401: {"description": "Missing or invalid authentication."},
+    403: {"description": "Conversation belongs to a different user."},
+    404: {"description": "Conversation not found or expired."},
+}
+
+
+@router.get(
+    "/{conversation_id}",
+    summary="Fetch conversation history",
+    description=(
+        "Returns all stored turns for a conversation (oldest → newest), plus the Redis TTL. "
+        "The caller must be the conversation owner."
+    ),
+    responses=_OWNER_RESPONSES,
+)
 async def get_conversation(
     conversation_id: str,
     auth=Depends(auth_guard),
@@ -29,7 +45,15 @@ async def get_conversation(
     }
 
 
-@router.get("/{conversation_id}/metadata")
+@router.get(
+    "/{conversation_id}/metadata",
+    summary="Fetch conversation metadata",
+    description=(
+        "Returns stored metadata (topic, turn_count, …) for a conversation plus the Redis TTL. "
+        "The caller must be the conversation owner."
+    ),
+    responses=_OWNER_RESPONSES,
+)
 async def get_conversation_metadata(
     conversation_id: str,
     auth=Depends(auth_guard),
@@ -53,7 +77,15 @@ async def get_conversation_metadata(
     }
 
 
-@router.delete("/{conversation_id}")
+@router.delete(
+    "/{conversation_id}",
+    summary="Delete a conversation",
+    description=(
+        "Deletes all Redis state for the conversation: turns, summary, owner, and metadata. "
+        "The caller must be the conversation owner. Idempotent — returns 404 if nothing existed to delete."
+    ),
+    responses=_OWNER_RESPONSES,
+)
 async def delete_conversation(
     conversation_id: str,
     auth=Depends(auth_guard),

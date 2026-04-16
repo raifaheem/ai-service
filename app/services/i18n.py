@@ -1,5 +1,4 @@
-from ..prompts import SYSTEM_PROMPTS, DISCLAIMERS, ADDON_PROMPTS
-
+from ..prompts import ADDON_PROMPTS, DISCLAIMERS, SYSTEM_PROMPTS
 
 SUPPORTED_LOCALES = {"ru", "en", "kk"}
 

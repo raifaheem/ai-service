@@ -3,17 +3,17 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from ..schemas_articles import ArticleAnalyzeRequest, ArticleAnalysisResponse
+from ..schemas_articles import ArticleAnalysisResponse, ArticleAnalyzeRequest
 from ..security import auth_guard
 from ..services.article_analyzer import analyze_article_text
 from ..services.article_parser import chunk_article_text
-from ..services.vector_store import upsert_text_chunks
 from ..services.file_text_extract import (
     extract_text_from_file,
     is_supported_article_file,
 )
+from ..services.vector_store import upsert_text_chunks
 
 router = APIRouter(prefix="/v1/articles", tags=["articles"])
 
@@ -59,7 +59,7 @@ async def _run_article_pipeline(
         )
     except Exception as e:
         logger.exception("Article analysis failed")
-        raise HTTPException(status_code=502, detail="Article analysis failed")
+        raise HTTPException(status_code=502, detail="Article analysis failed") from e
 
     return ArticleAnalysisResponse(
         source_id=final_source_id,
@@ -80,6 +80,18 @@ async def _run_article_pipeline(
     "/analyze",
     response_model=ArticleAnalysisResponse,
     dependencies=[Depends(auth_guard)],
+    summary="Analyze and optionally index a medical article (JSON body)",
+    description=(
+        "Chunks the article, optionally upserts the chunks into the Qdrant RAG corpus, "
+        "and runs an LLM analysis that extracts summary, key findings, limitations, "
+        "practical meaning, and red flags. When `index_chunks` is false, the article is "
+        "only analyzed and is not made available to future RAG queries."
+    ),
+    responses={
+        400: {"description": "Article text is too short (min 200 characters)."},
+        401: {"description": "Missing or invalid authentication."},
+        502: {"description": "Upstream LLM analysis failed."},
+    },
 )
 async def analyze_article(payload: ArticleAnalyzeRequest):
     return await _run_article_pipeline(
@@ -95,6 +107,17 @@ async def analyze_article(payload: ArticleAnalyzeRequest):
     "/analyze-file",
     response_model=ArticleAnalysisResponse,
     dependencies=[Depends(auth_guard)],
+    summary="Analyze and optionally index a medical article (multipart file upload)",
+    description=(
+        "Accepts `.txt`, `.pdf`, or `.docx` (max 10 MB), extracts text, then runs the same "
+        "pipeline as `/analyze`. Title defaults to the filename when not provided."
+    ),
+    responses={
+        400: {"description": "Unsupported file type, empty file, or extraction failure."},
+        401: {"description": "Missing or invalid authentication."},
+        413: {"description": "File exceeds the 10 MB upload limit."},
+        502: {"description": "Upstream LLM analysis failed."},
+    },
 )
 async def analyze_article_file(
     file: UploadFile = File(...),
@@ -124,7 +147,7 @@ async def analyze_article_file(
         raise HTTPException(
             status_code=400,
             detail=f"Failed to extract text from file: {e}",
-        )
+        ) from e
 
     final_title = (title or filename).strip()
     if not final_title:

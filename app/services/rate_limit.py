@@ -1,10 +1,14 @@
 import time
+
 from fastapi import HTTPException
+
 from ..config import settings
 from .redis_client import get_redis
 
+
 def _key(identifier: str) -> str:
     return f"{settings.redis_prefix}:rl:{identifier}:{int(time.time() // 60)}"  # ключ на минуту
+
 
 async def enforce_rate_limit(identifier: str) -> None:
     """

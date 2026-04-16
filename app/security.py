@@ -1,11 +1,12 @@
 from fastapi import Header, HTTPException
-from jose import jwt, JWTError
+from jose import JWTError, jwt
+
 from .config import settings
 
 
 def auth_guard(
-        authorization: str | None = Header(default=None),
-        x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
+    authorization: str | None = Header(default=None),
+    x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
 ):
     if x_service_token:
         valid_tokens = {t.strip() for t in settings.service_token.split(",") if t.strip()}
@@ -20,8 +21,8 @@ def auth_guard(
         try:
             payload = jwt.decode(token, settings.jwt_public_key, algorithms=[settings.jwt_alg])
             return {"auth": "jwt", "sub": payload.get("sub"), "payload": payload}
-        except JWTError:
-            raise HTTPException(status_code=401, detail="Invalid JWT")
+        except JWTError as e:
+            raise HTTPException(status_code=401, detail="Invalid JWT") from e
 
     raise HTTPException(status_code=401, detail="Unauthorized")
 

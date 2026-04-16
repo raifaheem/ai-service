@@ -1,10 +1,11 @@
 import logging
 import time
-from typing import Optional, List, AsyncGenerator, Dict, Any
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from ..config import settings
 from ..metrics import metrics
-from .i18n import get_system_prompt, get_rag_instruction, normalize_locale
+from .i18n import get_rag_instruction, get_system_prompt, normalize_locale
 from .openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ def _build_system_prompt(
 
 def _build_user_block(
     user_message: str,
-    profile_text: Optional[str] = None,
+    profile_text: str | None = None,
     locale: str = "ru",
 ) -> str:
     loc = normalize_locale(locale)
@@ -46,8 +47,7 @@ def _build_user_block(
                 f"Сұрағы:\n{user_message}"
             )
         return (
-            f"Профиль пользователя (если полезно, без лишних деталей):\n{profile_text}\n\n"
-            f"Запрос:\n{user_message}"
+            f"Профиль пользователя (если полезно, без лишних деталей):\n{profile_text}\n\n" f"Запрос:\n{user_message}"
         )
 
     return user_message
@@ -56,12 +56,12 @@ def _build_user_block(
 async def generate_health_answer(
     user_message: str,
     locale: str = "ru",
-    profile_text: Optional[str] = None,
-    history: Optional[List[dict]] = None,
-    rag_context: Optional[str] = None,
-    addon_prompt: Optional[str] = None,
+    profile_text: str | None = None,
+    history: list[dict] | None = None,
+    rag_context: str | None = None,
+    addon_prompt: str | None = None,
     temperature: float = 0.4,
-    summary: Optional[str] = None,
+    summary: str | None = None,
 ) -> str:
     system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
@@ -107,13 +107,13 @@ async def generate_health_answer(
 async def stream_health_answer(
     user_message: str,
     locale: str = "ru",
-    profile_text: Optional[str] = None,
-    history: Optional[List[dict]] = None,
-    rag_context: Optional[str] = None,
-    addon_prompt: Optional[str] = None,
+    profile_text: str | None = None,
+    history: list[dict] | None = None,
+    rag_context: str | None = None,
+    addon_prompt: str | None = None,
     temperature: float = 0.4,
-    summary: Optional[str] = None,
-) -> AsyncGenerator[Dict[str, Any], None]:
+    summary: str | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
     system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
         user_message=user_message,
@@ -121,9 +121,9 @@ async def stream_health_answer(
         locale=locale,
     )
 
-    model_name: Optional[str] = None
-    finish_reason: Optional[str] = None
-    usage_dict: Optional[dict] = None
+    model_name: str | None = None
+    finish_reason: str | None = None
+    usage_dict: dict | None = None
 
     messages = [{"role": "system", "content": system_prompt}]
     if summary:

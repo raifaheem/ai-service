@@ -1,6 +1,40 @@
+# VCS / editors
+.git
+.gitignore
+.github
+.idea
+.vscode
+.claude
+
+# Python caches
 .venv
+venv
 __pycache__
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.coverage
+.coverage.*
+htmlcov
+
+# Secrets & local configs — never bake into image
 .env
-.git
-.idea
+.env.*
+
+# Tests & docs — not needed at runtime
+tests
+*.md
+docs
+
+# Knowledge base + seed scripts — used offline, never from the runtime image
+data
+scripts
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local plans
+plans

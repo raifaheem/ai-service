@@ -1,8 +1,10 @@
 import redis.asyncio as redis
 from redis.asyncio import Redis
+
 from ..config import settings
 
 _redis: Redis | None = None
+
 
 async def init_redis() -> None:
     global _redis
@@ -18,11 +20,13 @@ async def init_redis() -> None:
     # Проверка соединения (fail fast)
     await _redis.ping()
 
+
 async def close_redis() -> None:
     global _redis
     if _redis is not None:
         await _redis.close()
         _redis = None
+
 
 def get_redis() -> Redis:
     if _redis is None:

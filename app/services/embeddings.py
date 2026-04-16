@@ -27,7 +27,7 @@ def normalize_text_for_embedding(text: str) -> str:
 
 
 def _emb_cache_key(normalized_text: str) -> str:
-    digest = hashlib.md5(normalized_text.encode()).hexdigest()
+    digest = hashlib.md5(normalized_text.encode(), usedforsecurity=False).hexdigest()
     return f"{settings.redis_prefix}:emb:{digest}"
 
 
@@ -104,11 +104,11 @@ async def embed_texts(texts: list[str], redis_client=None) -> list[list[float]]:
         )
         vectors = [item.embedding for item in resp.data]
 
-        for idx, vector in zip(uncached_indices, vectors):
+        for idx, vector in zip(uncached_indices, vectors, strict=False):
             results[idx] = vector
 
         if redis_client:
-            for text, vector in zip(uncached_texts, vectors):
+            for text, vector in zip(uncached_texts, vectors, strict=False):
                 cache_key = _emb_cache_key(text)
                 await _set_cached_embedding(redis_client, cache_key, vector)
 

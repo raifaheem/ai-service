@@ -1,0 +1,406 @@
+{
+  "version": 1,
+  "description": "Phase 12 seed corpus for health-ai-service RAG. Each article is adapted from public-domain medical sources (WHO, NIH MedlinePlus, CDC, NICE, EFSA, AASM). The kk articles are initial drafts derived from the ru versions and flagged for human review.",
+  "articles": [
+    {
+      "source_id": "ru-headache",
+      "file": "articles/ru/headache.md",
+      "title": "Головная боль: причины, самопомощь и признаки опасности",
+      "language": "ru",
+      "topic": "symptoms",
+      "attribution": {
+        "source": "WHO Headache disorders fact sheet; NIH MedlinePlus Headache",
+        "source_url": "https://www.who.int/news-room/fact-sheets/detail/headache-disorders",
+        "license": "public domain (NIH) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted, not reproduced",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-back-pain",
+      "file": "articles/ru/back-pain.md",
+      "title": "Боль в спине: что делать и когда обращаться к врачу",
+      "language": "ru",
+      "topic": "symptoms",
+      "attribution": {
+        "source": "NICE Guideline NG59 Low back pain and sciatica (2020); NIH MedlinePlus Back Pain",
+        "source_url": "https://www.nice.org.uk/guidance/ng59",
+        "license": "public domain (NIH) / Open Government Licence (NICE) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-fatigue",
+      "file": "articles/ru/fatigue.md",
+      "title": "Хроническая усталость: на что обратить внимание",
+      "language": "ru",
+      "topic": "symptoms",
+      "attribution": {
+        "source": "NIH MedlinePlus Fatigue; CDC clinical overview on chronic fatigue syndrome",
+        "source_url": "https://medlineplus.gov/fatigue.html",
+        "license": "public domain",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-insomnia",
+      "file": "articles/ru/insomnia.md",
+      "title": "Бессонница: что помогает без снотворных",
+      "language": "ru",
+      "topic": "sleep",
+      "attribution": {
+        "source": "CDC Sleep and Sleep Disorders; AASM Clinical Practice Guideline for Chronic Insomnia",
+        "source_url": "https://www.cdc.gov/sleep/index.html",
+        "license": "public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-vitamin-d",
+      "file": "articles/ru/vitamin-d.md",
+      "title": "Витамин D: зачем нужен, как его получить, кому сдавать анализ",
+      "language": "ru",
+      "topic": "nutrition",
+      "attribution": {
+        "source": "NIH Office of Dietary Supplements Vitamin D Fact Sheet; EFSA reference values",
+        "source_url": "https://ods.od.nih.gov/factsheets/VitaminD-Consumer/",
+        "license": "public domain (NIH) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-hydration",
+      "file": "articles/ru/hydration.md",
+      "title": "Водный баланс: сколько пить и когда это действительно важно",
+      "language": "ru",
+      "topic": "nutrition",
+      "attribution": {
+        "source": "EFSA Scientific Opinion on Dietary Reference Values for water (2010); CDC Water and Healthier Drinks",
+        "source_url": "https://www.cdc.gov/healthyweight/healthy_eating/water-and-healthier-drinks.html",
+        "license": "public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-cardio-basics",
+      "file": "articles/ru/cardio-basics.md",
+      "title": "Базовая кардио-программа для начинающих",
+      "language": "ru",
+      "topic": "activity",
+      "attribution": {
+        "source": "WHO Physical activity guidelines for adults (2020); CDC Physical Activity Basics",
+        "source_url": "https://www.who.int/publications/i/item/9789240015128",
+        "license": "CC BY-NC-SA 3.0 IGO (WHO) / public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-stress",
+      "file": "articles/ru/stress.md",
+      "title": "Стресс: как распознать и что делать",
+      "language": "ru",
+      "topic": "mental-health",
+      "attribution": {
+        "source": "NIH National Institute of Mental Health I'm So Stressed Out!; CDC Coping with Stress",
+        "source_url": "https://www.nimh.nih.gov/health/publications/so-stressed-out-fact-sheet",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-anxiety",
+      "file": "articles/ru/anxiety.md",
+      "title": "Тревожность: когда это норма, а когда — повод обратиться за помощью",
+      "language": "ru",
+      "topic": "mental-health",
+      "attribution": {
+        "source": "NIH National Institute of Mental Health Anxiety Disorders; WHO Anxiety disorders fact sheet (2023)",
+        "source_url": "https://www.nimh.nih.gov/health/topics/anxiety-disorders",
+        "license": "public domain (NIH) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "ru-seasonal-cold",
+      "file": "articles/ru/seasonal-cold.md",
+      "title": "Сезонная простуда: что работает, а что — нет",
+      "language": "ru",
+      "topic": "seasonal",
+      "attribution": {
+        "source": "CDC Common Cold; NIH MedlinePlus Common Cold",
+        "source_url": "https://www.cdc.gov/common-cold/about/index.html",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-back-pain",
+      "file": "articles/en/back-pain.md",
+      "title": "Back Pain: What to Do and When to See a Doctor",
+      "language": "en",
+      "topic": "symptoms",
+      "attribution": {
+        "source": "NICE Guideline NG59 Low back pain and sciatica (2020); NIH MedlinePlus Back Pain",
+        "source_url": "https://www.nice.org.uk/guidance/ng59",
+        "license": "public domain (NIH) / Open Government Licence (NICE) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-fatigue",
+      "file": "articles/en/fatigue.md",
+      "title": "Chronic Fatigue: What to Look For",
+      "language": "en",
+      "topic": "symptoms",
+      "attribution": {
+        "source": "NIH MedlinePlus Fatigue; CDC clinical materials on chronic fatigue syndrome",
+        "source_url": "https://medlineplus.gov/fatigue.html",
+        "license": "public domain",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-insomnia",
+      "file": "articles/en/insomnia.md",
+      "title": "Insomnia: What Helps Without Sleeping Pills",
+      "language": "en",
+      "topic": "sleep",
+      "attribution": {
+        "source": "CDC Sleep and Sleep Disorders; AASM Clinical Practice Guideline for Chronic Insomnia",
+        "source_url": "https://www.cdc.gov/sleep/index.html",
+        "license": "public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-iron-b12",
+      "file": "articles/en/iron-b12.md",
+      "title": "Iron and Vitamin B12: The Two Most Common Nutrient Deficiencies",
+      "language": "en",
+      "topic": "nutrition",
+      "attribution": {
+        "source": "NIH Office of Dietary Supplements Iron and B12 Fact Sheets; CDC guidance on anemia screening",
+        "source_url": "https://ods.od.nih.gov/factsheets/Iron-Consumer/",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-hydration",
+      "file": "articles/en/hydration.md",
+      "title": "Hydration: How Much to Drink and When It Actually Matters",
+      "language": "en",
+      "topic": "nutrition",
+      "attribution": {
+        "source": "EFSA Scientific Opinion on Dietary Reference Values for water (2010); CDC Water and Healthier Drinks",
+        "source_url": "https://www.cdc.gov/healthyweight/healthy_eating/water-and-healthier-drinks.html",
+        "license": "public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-strength-training",
+      "file": "articles/en/strength-training.md",
+      "title": "Strength Training for Beginners",
+      "language": "en",
+      "topic": "activity",
+      "attribution": {
+        "source": "WHO Physical activity guidelines for adults (2020); CDC Physical Activity Basics — Strength Training",
+        "source_url": "https://www.who.int/publications/i/item/9789240015128",
+        "license": "CC BY-NC-SA 3.0 IGO (WHO) / public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-stretching",
+      "file": "articles/en/stretching.md",
+      "title": "Stretching and Recovery: What the Research Actually Shows",
+      "language": "en",
+      "topic": "activity",
+      "attribution": {
+        "source": "NIH MedlinePlus Flexibility Exercise; CDC Physical Activity Basics",
+        "source_url": "https://medlineplus.gov/exerciseandphysicalfitness.html",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-anxiety",
+      "file": "articles/en/anxiety.md",
+      "title": "Anxiety: When It's Normal and When It's Time to Get Help",
+      "language": "en",
+      "topic": "mental-health",
+      "attribution": {
+        "source": "NIH National Institute of Mental Health Anxiety Disorders; WHO Anxiety disorders fact sheet (2023)",
+        "source_url": "https://www.nimh.nih.gov/health/topics/anxiety-disorders",
+        "license": "public domain (NIH) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-meditation",
+      "file": "articles/en/meditation.md",
+      "title": "Meditation and Breathing: Simple Tools That Actually Work",
+      "language": "en",
+      "topic": "mental-health",
+      "attribution": {
+        "source": "NIH NCCIH Meditation and Mindfulness: What You Need To Know; CDC stress management materials",
+        "source_url": "https://www.nccih.nih.gov/health/meditation-and-mindfulness-what-you-need-to-know",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "en-seasonal-allergies",
+      "file": "articles/en/seasonal-allergies.md",
+      "title": "Seasonal Allergies: Managing Hay Fever",
+      "language": "en",
+      "topic": "seasonal",
+      "attribution": {
+        "source": "CDC Pollen and Your Health; NIH MedlinePlus Hay Fever",
+        "source_url": "https://www.cdc.gov/climate-health/php/effects/pollen.html",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-headache",
+      "file": "articles/kk/headache.md",
+      "title": "Бас ауруы: себептері, өз бетінше көмек және қауіп белгілері",
+      "language": "kk",
+      "topic": "symptoms",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from ru-headache; original sources: WHO Headache disorders; NIH MedlinePlus",
+        "source_url": "https://www.who.int/news-room/fact-sheets/detail/headache-disorders",
+        "license": "public domain (NIH) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-back-pain",
+      "file": "articles/kk/back-pain.md",
+      "title": "Арқа ауруы: не істеу керек және дәрігерге қашан жүгіну керек",
+      "language": "kk",
+      "topic": "symptoms",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from ru-back-pain; original sources: NICE NG59; NIH MedlinePlus",
+        "source_url": "https://www.nice.org.uk/guidance/ng59",
+        "license": "public domain (NIH) / Open Government Licence (NICE) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-fatigue",
+      "file": "articles/kk/fatigue.md",
+      "title": "Созылмалы шаршау: неге назар аудару керек",
+      "language": "kk",
+      "topic": "symptoms",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from ru-fatigue; original sources: NIH MedlinePlus Fatigue; CDC",
+        "source_url": "https://medlineplus.gov/fatigue.html",
+        "license": "public domain",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-insomnia",
+      "file": "articles/kk/insomnia.md",
+      "title": "Ұйқысыздық: ұйықтататын дәрісіз не көмектеседі",
+      "language": "kk",
+      "topic": "sleep",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from ru-insomnia; original sources: CDC Sleep; AASM",
+        "source_url": "https://www.cdc.gov/sleep/index.html",
+        "license": "public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-vitamins",
+      "file": "articles/kk/vitamins.md",
+      "title": "Дәрумендер: шынымен не қажет және талдауды кім тапсыру керек",
+      "language": "kk",
+      "topic": "nutrition",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from multiple ru sources; original sources: NIH ODS; EFSA",
+        "source_url": "https://ods.od.nih.gov/factsheets/list-all/",
+        "license": "public domain (NIH) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-hydration",
+      "file": "articles/kk/hydration.md",
+      "title": "Су балансы: қанша ішу керек және бұл қашан шынымен маңызды",
+      "language": "kk",
+      "topic": "nutrition",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from ru-hydration; original sources: EFSA; CDC",
+        "source_url": "https://www.cdc.gov/healthyweight/healthy_eating/water-and-healthier-drinks.html",
+        "license": "public domain (CDC) — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-stress",
+      "file": "articles/kk/stress.md",
+      "title": "Стресс: қалай тану және не істеу керек",
+      "language": "kk",
+      "topic": "mental-health",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from ru-stress; original sources: NIH NIMH; CDC",
+        "source_url": "https://www.nimh.nih.gov/health/publications/so-stressed-out-fact-sheet",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-meditation",
+      "file": "articles/kk/meditation.md",
+      "title": "Медитация және тыныс алу: шынымен жұмыс істейтін қарапайым құралдар",
+      "language": "kk",
+      "topic": "mental-health",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from en-meditation; original sources: NIH NCCIH; CDC",
+        "source_url": "https://www.nccih.nih.gov/health/meditation-and-mindfulness-what-you-need-to-know",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-seasonal-cold",
+      "file": "articles/kk/seasonal-cold.md",
+      "title": "Маусымдық суық тию: не жұмыс істейді, не жұмыс істемейді",
+      "language": "kk",
+      "topic": "seasonal",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from ru-seasonal-cold; original sources: CDC Common Cold; NIH MedlinePlus",
+        "source_url": "https://www.cdc.gov/common-cold/about/index.html",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    },
+    {
+      "source_id": "kk-allergies",
+      "file": "articles/kk/allergies.md",
+      "title": "Маусымдық аллергия: сенемек безеуін басқару",
+      "language": "kk",
+      "topic": "seasonal",
+      "review_status": "machine_translated",
+      "attribution": {
+        "source": "Translated and adapted from en-seasonal-allergies; original sources: CDC Pollen; NIH MedlinePlus",
+        "source_url": "https://www.cdc.gov/climate-health/php/effects/pollen.html",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-16"
+      }
+    }
+  ]
+}

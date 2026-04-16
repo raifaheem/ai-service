@@ -2,11 +2,11 @@ from .vector_store import search_text_chunks
 
 
 async def retrieve_context(
-        query: str,
-        limit: int = 5,
-        language: str | None = None,
-        redis_client=None,
-        fallback_languages: list[str] | None = None,
+    query: str,
+    limit: int = 5,
+    language: str | None = None,
+    redis_client=None,
+    fallback_languages: list[str] | None = None,
 ) -> list[dict]:
     return await search_text_chunks(
         query=query,
@@ -18,11 +18,11 @@ async def retrieve_context(
 
 
 async def build_rag_context(
-        query: str,
-        limit: int = 5,
-        language: str | None = None,
-        redis_client=None,
-        fallback_languages: list[str] | None = None,
+    query: str,
+    limit: int = 5,
+    language: str | None = None,
+    redis_client=None,
+    fallback_languages: list[str] | None = None,
 ) -> tuple[str, list[dict], float | None]:
     chunks = await retrieve_context(
         query=query,
@@ -43,12 +43,7 @@ async def build_rag_context(
         source_id = chunk.get("source_id") or "unknown"
         text = chunk.get("text") or ""
 
-        parts.append(
-            f"[SOURCE {i}]\n"
-            f"title: {title}\n"
-            f"source_id: {source_id}\n"
-            f"text: {text}"
-        )
+        parts.append(f"[SOURCE {i}]\n" f"title: {title}\n" f"source_id: {source_id}\n" f"text: {text}")
 
     return "\n\n".join(parts), chunks, rag_score
 

@@ -1,6 +1,5 @@
 import logging
 import time
-from typing import Optional
 
 from ..config import settings
 from ..metrics import metrics
@@ -38,7 +37,7 @@ KEEP_RECENT_TURNS = 6
 async def summarize_conversation(
     turns: list[dict],
     locale: str = "ru",
-) -> Optional[str]:
+) -> str | None:
     """Summarize a list of conversation turns into a brief medical context summary."""
     if not turns:
         return None

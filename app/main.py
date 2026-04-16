@@ -12,12 +12,12 @@ setup_logging(settings.log_level, settings.log_format)
 
 logger = logging.getLogger(__name__)
 
+from .routers.articles import router as articles_router
 from .routers.chat import router as chat_router
 from .routers.conversations import router as conv_router
-from .routers.articles import router as articles_router
 from .routers.rag import router as rag_router
-from .services.redis_client import init_redis, close_redis, get_redis
-from .services.vector_client import init_qdrant, close_qdrant, get_qdrant
+from .services.redis_client import close_redis, get_redis, init_redis
+from .services.vector_client import close_qdrant, get_qdrant, init_qdrant
 from .services.vector_store import ensure_qdrant_collection
 
 # Track active streaming connections for graceful shutdown
@@ -45,7 +45,9 @@ async def lifespan(app: FastAPI):
     finally:
         _shutdown_event.set()
         if _active_streams:
-            logger.info("Waiting for %d active streams to finish (timeout=%ds)", len(_active_streams), _SHUTDOWN_TIMEOUT)
+            logger.info(
+                "Waiting for %d active streams to finish (timeout=%ds)", len(_active_streams), _SHUTDOWN_TIMEOUT
+            )
             _, pending = await asyncio.wait(_active_streams, timeout=_SHUTDOWN_TIMEOUT)
             if pending:
                 logger.warning("Force-cancelling %d streams after shutdown timeout", len(pending))
@@ -55,10 +57,38 @@ async def lifespan(app: FastAPI):
         await close_redis()
 
 
+_API_DESCRIPTION = """\
+Cognitive health AI assistant with RAG, conversation memory, intent classification,
+and content safety. Called service-to-service from Laravel (`X-Service-Token`) and
+directly from clients (`Authorization: Bearer <JWT>`, RS256).
+
+**Supported locales:** `ru`, `en`, `kk`.
+
+**Auth modes:**
+- `X-Service-Token` + `X-User-Id` — server-to-server (Laravel).
+- `Authorization: Bearer <jwt>` — direct client access (RS256-signed, `sub` claim required).
+
+See [API_CONTRACT.md](https://github.com/) in the repository root for curl and
+PHP integration examples, SSE event shapes, and error-code reference.
+"""
+
+_OPENAPI_TAGS = [
+    {"name": "chat", "description": "Medical consultation endpoints (sync JSON + SSE streaming)."},
+    {"name": "conversations", "description": "Retrieve and delete conversation history (owner-scoped)."},
+    {"name": "articles", "description": "Ingest medical articles into the RAG corpus."},
+    {"name": "dev-rag", "description": "Dev-only RAG inspection (requires `ENABLE_DEV_ROUTES=true`)."},
+    {"name": "system", "description": "Liveness, metrics, service root."},
+]
+
 app = FastAPI(
     title=settings.app_name,
+    description=_API_DESCRIPTION,
     version=settings.app_version,
     lifespan=lifespan,
+    docs_url="/docs" if settings.app_env != "production" else None,
+    redoc_url="/redoc" if settings.app_env != "production" else None,
+    openapi_tags=_OPENAPI_TAGS,
+    contact={"name": "Health AI Service", "url": "https://github.com/"},
 )
 
 if settings.allowed_origins == "*":
@@ -81,12 +111,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from .middleware.api_version import APIVersionMiddleware
 from .middleware.request_logging import RequestLoggingMiddleware
 
 app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(APIVersionMiddleware)
 
 
-@app.get("/")
+@app.get(
+    "/",
+    tags=["system"],
+    summary="Service root",
+    description="Returns service identity and environment. Intended for smoke checks, not liveness.",
+)
 async def root():
     return {
         "name": settings.app_name,
@@ -96,7 +133,36 @@ async def root():
     }
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["system"],
+    summary="Liveness + dependency health",
+    description=(
+        "Returns `status: ok` when Redis, Qdrant, and the OpenAI circuit breaker are all healthy, "
+        "otherwise `status: degraded` with per-dependency details in `checks`. "
+        "Wire this to the orchestrator's liveness/readiness probe."
+    ),
+    responses={
+        200: {
+            "description": "Health snapshot",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "ok",
+                        "env": "dev",
+                        "version": "1.0.0",
+                        "checks": {
+                            "redis": "ok",
+                            "qdrant": "ok",
+                            "openai_circuit": "closed",
+                            "qdrant_circuit": "closed",
+                        },
+                    }
+                }
+            },
+        }
+    },
+)
 async def health():
     from .services.circuit_breaker import openai_breaker, qdrant_breaker
 
@@ -130,7 +196,16 @@ async def health():
     }
 
 
-@app.get("/metrics")
+@app.get(
+    "/metrics",
+    tags=["system"],
+    summary="In-process metrics snapshot",
+    description=(
+        "Unauthenticated metrics endpoint: request counts, intent distribution, OpenAI token usage, "
+        "RAG hit rate, 1h error rate, plus live Redis (active conversations) and Qdrant (collection size) "
+        "counters. Keep behind a private network or add auth before exposing externally."
+    ),
+)
 async def get_metrics():
     from .metrics import metrics as app_metrics
 

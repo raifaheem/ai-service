@@ -3,7 +3,7 @@ import sys
 
 from pythonjsonlogger.json import JsonFormatter
 
-from .context import get_request_id, get_conversation_id, get_user_id
+from .context import get_conversation_id, get_request_id, get_user_id
 
 
 class ContextFilter(logging.Filter):

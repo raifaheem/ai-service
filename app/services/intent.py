@@ -2,8 +2,7 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass
 
 from ..config import settings
 from ..metrics import metrics
@@ -86,7 +85,7 @@ class IntentResult:
     risk_level: str
 
     @property
-    def addon_name(self) -> Optional[str]:
+    def addon_name(self) -> str | None:
         return CATEGORY_TO_ADDON.get(self.category)
 
     @property
@@ -106,11 +105,11 @@ def _default_intent() -> IntentResult:
 
 def _build_cache_key(message: str, history_tail: list[dict]) -> str:
     payload = json.dumps({"m": message, "h": history_tail}, ensure_ascii=False, sort_keys=True)
-    digest = hashlib.md5(payload.encode()).hexdigest()
+    digest = hashlib.md5(payload.encode(), usedforsecurity=False).hexdigest()
     return f"{settings.redis_prefix}:intent:{digest}"
 
 
-async def _get_cached(redis_client, cache_key: str) -> Optional[IntentResult]:
+async def _get_cached(redis_client, cache_key: str) -> IntentResult | None:
     try:
         raw = await redis_client.get(cache_key)
         if raw:
@@ -130,7 +129,7 @@ async def _set_cached(redis_client, cache_key: str, result: IntentResult) -> Non
 
 async def classify_intent(
     message: str,
-    history: Optional[list[dict]] = None,
+    history: list[dict] | None = None,
     redis_client=None,
 ) -> IntentResult:
     history_tail = (history or [])[-2:]
