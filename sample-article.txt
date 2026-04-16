@@ -1,8 +1,0 @@
-﻿Migraine is a neurological disorder characterized by recurrent headache attacks.
-These attacks are often associated with nausea, photophobia, and phonophobia.
-Some patients experience aura before the headache begins.
-Clinical evaluation should take red-flag symptoms into account, including sudden severe onset,
-fever, confusion, focal neurological deficits, and progressive worsening.
-Migraine symptoms can overlap with other conditions, so diagnosis should not be made
-from a short text description alone.
-Rest in a dark room, hydration, and trigger avoidance may help some patients.
