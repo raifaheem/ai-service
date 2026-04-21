@@ -2,8 +2,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
+from ..context import get_request_id
 from ..security import auth_guard, resolve_user_id
 from ..services import memory
+from ..services.audit import EVENT_CONVERSATION_DELETE, record_audit_event
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
@@ -102,4 +104,12 @@ async def delete_conversation(
     deleted = await memory.delete_conversation(conversation_id)
     if deleted == 0:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    await record_audit_event(
+        EVENT_CONVERSATION_DELETE,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        request_id=get_request_id(),
+        keys_deleted=deleted,
+    )
     return {"deleted": True, "conversation_id": conversation_id}

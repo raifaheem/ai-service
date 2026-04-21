@@ -18,6 +18,11 @@ from ..metrics import metrics
 from ..schemas import ChatIntent, ChatRequest, ChatResponse, ChatSource
 from ..security import auth_guard, resolve_user_id
 from ..services import memory
+from ..services.audit import (
+    EVENT_CHAT_ANSWER,
+    EVENT_CHAT_INJECTION_BLOCKED,
+    record_audit_event,
+)
 from ..services.circuit_breaker import DEGRADED_MESSAGES, openai_breaker
 from ..services.content_filter import check_response_safety
 from ..services.i18n import get_disclaimer, get_prompt_addon, normalize_locale
@@ -274,6 +279,13 @@ async def chat(
         sanitized = sanitize_input(req.message)
         refusal = INJECTION_REFUSAL.get(locale, INJECTION_REFUSAL["ru"])
         await _persist_turns(conversation_id, sanitized, refusal, user_id, topic="blocked_injection")
+        await record_audit_event(
+            EVENT_CHAT_INJECTION_BLOCKED,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=get_request_id(),
+            locale=locale,
+        )
         return ChatResponse(
             answer=refusal,
             disclaimer=disclaimer,
@@ -366,6 +378,19 @@ async def chat(
         user_id,
         topic=intent.category,
         turn_count=len(history) + 2,
+    )
+
+    await record_audit_event(
+        EVENT_CHAT_ANSWER,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        request_id=get_request_id(),
+        intent_category=intent.category,
+        risk_level=intent.risk_level,
+        rag_used=bool(rag_chunks),
+        rag_score=rag_score,
+        locale=locale,
+        applied_filters=list(applied_filters),
     )
 
     return ChatResponse(
