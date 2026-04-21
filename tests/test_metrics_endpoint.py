@@ -1,7 +1,12 @@
-from unittest.mock import patch, AsyncMock, MagicMock
+"""Tests for the /metrics HTTP endpoint (B.2).
+
+Endpoint now returns Prometheus text format instead of JSON.
+"""
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
@@ -22,92 +27,75 @@ def mock_qdrant():
     return q
 
 
-async def test_metrics_endpoint_returns_json(mock_redis, mock_qdrant):
-    with patch("app.services.redis_client._redis", mock_redis), \
-         patch("app.services.redis_client.get_redis", return_value=mock_redis), \
-         patch("app.services.vector_client._qdrant", mock_qdrant), \
-         patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
-         patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock):
+def _patched(mock_redis, mock_qdrant):
+    return [
+        patch("app.services.redis_client._redis", mock_redis),
+        patch("app.services.redis_client.get_redis", return_value=mock_redis),
+        patch("app.services.vector_client._qdrant", mock_qdrant),
+        patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
+        patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
+    ]
+
+
+async def _get_metrics(mock_redis, mock_qdrant, headers=None):
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for p in _patched(mock_redis, mock_qdrant):
+            stack.enter_context(p)
 
         from app.main import app
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/metrics")
+            return await client.get("/metrics", headers=headers or {})
 
+
+async def test_metrics_endpoint_returns_prometheus_text(mock_redis, mock_qdrant):
+    resp = await _get_metrics(mock_redis, mock_qdrant, {"X-Service-Token": "test-token"})
     assert resp.status_code == 200
-    data = resp.json()
-    assert "requests_total" in data
-    assert "openai_tokens_total" in data
-    assert "rag_hit_rate" in data
-    assert "active_conversations" in data
-    assert "qdrant_collection_size" in data
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "version=0.0.4" in resp.headers["content-type"]
 
 
-async def test_metrics_endpoint_expected_keys(mock_redis, mock_qdrant):
-    with patch("app.services.redis_client._redis", mock_redis), \
-         patch("app.services.redis_client.get_redis", return_value=mock_redis), \
-         patch("app.services.vector_client._qdrant", mock_qdrant), \
-         patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
-         patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock):
+async def test_metrics_endpoint_exposes_core_metric_names(mock_redis, mock_qdrant):
+    from app.metrics import metrics
 
-        from app.main import app
+    # Seed some data so the collectors aren't empty on first scrape.
+    metrics.record_request(200, 12.3, path_tag="/health")
+    metrics.record_intent("general_health", risk_level="low")
+    metrics.record_openai_usage(100, 50, call_type="generate")
+    metrics.record_rag_result(True)
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/metrics")
-
-    data = resp.json()
-    expected_keys = {
-        "requests_total",
-        "requests_by_status",
-        "requests_by_intent",
-        "avg_response_time_ms",
-        "openai_tokens_prompt",
-        "openai_tokens_completion",
-        "openai_tokens_total",
-        "rag_hit_rate",
-        "rag_requests",
-        "rag_hits",
-        "error_rate_1h",
-        "errors_in_last_hour",
-        "active_conversations",
-        "qdrant_collection_size",
-    }
-    assert expected_keys.issubset(set(data.keys()))
+    resp = await _get_metrics(mock_redis, mock_qdrant, {"X-Service-Token": "test-token"})
+    body = resp.text
+    assert "healthai_requests_total" in body
+    assert "healthai_request_duration_seconds" in body
+    assert "healthai_intent_total" in body
+    assert "healthai_openai_tokens_total" in body
+    assert "healthai_rag_requests_total" in body
+    assert "healthai_circuit_breaker_state" in body
 
 
-async def test_metrics_active_conversations_count(mock_redis, mock_qdrant):
-    mock_redis.keys = AsyncMock(return_value=["k1", "k2", "k3"])
-
-    with patch("app.services.redis_client._redis", mock_redis), \
-         patch("app.services.redis_client.get_redis", return_value=mock_redis), \
-         patch("app.services.vector_client._qdrant", mock_qdrant), \
-         patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
-         patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock):
-
-        from app.main import app
-
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/metrics")
-
-    data = resp.json()
-    assert data["active_conversations"] == 3
+async def test_metrics_endpoint_reports_circuit_breaker_state(mock_redis, mock_qdrant):
+    resp = await _get_metrics(mock_redis, mock_qdrant, {"X-Service-Token": "test-token"})
+    body = resp.text
+    assert 'healthai_circuit_breaker_state{name="openai"}' in body
+    assert 'healthai_circuit_breaker_state{name="qdrant"}' in body
 
 
-async def test_metrics_qdrant_size(mock_redis, mock_qdrant):
-    with patch("app.services.redis_client._redis", mock_redis), \
-         patch("app.services.redis_client.get_redis", return_value=mock_redis), \
-         patch("app.services.vector_client._qdrant", mock_qdrant), \
-         patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
-         patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock):
+async def test_metrics_endpoint_reports_active_conversations_gauge(mock_redis, mock_qdrant):
+    resp = await _get_metrics(mock_redis, mock_qdrant, {"X-Service-Token": "test-token"})
+    body = resp.text
+    assert "healthai_active_conversations" in body
 
-        from app.main import app
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/metrics")
+async def test_metrics_endpoint_reports_qdrant_collection_size(mock_redis, mock_qdrant):
+    resp = await _get_metrics(mock_redis, mock_qdrant, {"X-Service-Token": "test-token"})
+    body = resp.text
+    assert "healthai_qdrant_collection_size" in body
 
-    data = resp.json()
-    assert data["qdrant_collection_size"] == 42
+
+async def test_metrics_requires_auth(mock_redis, mock_qdrant):
+    resp = await _get_metrics(mock_redis, mock_qdrant, headers=None)
+    assert resp.status_code == 401

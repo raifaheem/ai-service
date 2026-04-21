@@ -291,7 +291,7 @@ async def chat(
 
     redis_client = _get_redis_or_none()
     intent = await classify_intent(user_message, history=history, redis_client=redis_client, locale=locale)
-    metrics.record_intent(intent.category)
+    metrics.record_intent(intent.category, risk_level=intent.risk_level)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
@@ -480,7 +480,7 @@ async def chat_stream(
 
     redis_client = _get_redis_or_none()
     intent = await classify_intent(user_message, history=history, redis_client=redis_client, locale=locale)
-    metrics.record_intent(intent.category)
+    metrics.record_intent(intent.category, risk_level=intent.risk_level)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])

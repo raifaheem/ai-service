@@ -99,7 +99,7 @@ async def generate_health_answer(
                 "call_type": "generate",
             },
         )
-        metrics.record_openai_usage(usage.prompt_tokens, usage.completion_tokens)
+        metrics.record_openai_usage(usage.prompt_tokens, usage.completion_tokens, call_type="generate")
 
     return (resp.choices[0].message.content or "").strip()
 
@@ -179,6 +179,7 @@ async def stream_health_answer(
         metrics.record_openai_usage(
             usage_dict.get("prompt_tokens", 0) or 0,
             usage_dict.get("completion_tokens", 0) or 0,
+            call_type="generate",
         )
         yield {
             "type": "usage",

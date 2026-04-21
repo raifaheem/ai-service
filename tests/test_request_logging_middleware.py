@@ -1,11 +1,11 @@
-from unittest.mock import patch, AsyncMock
+import contextlib
 
 import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
-from app.middleware.request_logging import RequestLoggingMiddleware
-from app.metrics import Metrics
+from app.metrics import REQUESTS_TOTAL
+from app.middleware.request_logging import RequestLoggingMiddleware, _path_tag
 
 
 def _create_test_app() -> FastAPI:
@@ -33,9 +33,8 @@ def test_app():
     return _create_test_app()
 
 
-@pytest.fixture
-def fresh_metrics():
-    return Metrics()
+def _counter_value(counter, **labels) -> float:
+    return counter.labels(**labels)._value.get()
 
 
 async def test_response_includes_x_request_id(test_app):
@@ -69,25 +68,35 @@ async def test_health_endpoint_still_works(test_app):
     assert resp.status_code == 200
 
 
-async def test_metrics_incremented_after_request(test_app, fresh_metrics):
-    with patch("app.middleware.request_logging.metrics", fresh_metrics):
-        transport = ASGITransport(app=test_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            await client.get("/test")
-            await client.get("/test")
-    assert fresh_metrics.requests_total == 2
-    assert fresh_metrics.requests_by_status.get(200) == 2
+async def test_prometheus_counter_increments_for_2xx(test_app):
+    before = _counter_value(REQUESTS_TOTAL, status="200", path_tag="other")
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.get("/test")
+        await client.get("/test")
+    # /test is not in _STATIC_PATHS — it collapses to "other".
+    assert _counter_value(REQUESTS_TOTAL, status="200", path_tag="other") == before + 2
 
 
-async def test_error_metrics_recorded_on_exception(test_app, fresh_metrics):
-    """When an endpoint raises, the middleware records the error in metrics before re-raising."""
-    with patch("app.middleware.request_logging.metrics", fresh_metrics):
-        transport = ASGITransport(app=test_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            try:
-                await client.get("/error")
-            except Exception:
-                pass  # BaseHTTPMiddleware re-raises after our except block
-    # The middleware's except block ran and recorded the 500 error
-    assert fresh_metrics.requests_total == 1
-    assert fresh_metrics.requests_by_status.get(500) == 1
+async def test_prometheus_counter_increments_for_5xx_on_exception(test_app):
+    before = _counter_value(REQUESTS_TOTAL, status="500", path_tag="other")
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with contextlib.suppress(Exception):
+            await client.get("/error")
+    assert _counter_value(REQUESTS_TOTAL, status="500", path_tag="other") == before + 1
+
+
+class TestPathTag:
+    def test_static_path_passes_through(self):
+        assert _path_tag("/health") == "/health"
+        assert _path_tag("/metrics") == "/metrics"
+        assert _path_tag("/v1/chat") == "/v1/chat"
+        assert _path_tag("/v1/chat/stream") == "/v1/chat/stream"
+
+    def test_conversation_id_collapses(self):
+        assert _path_tag("/v1/conversations/abc-123") == "/v1/conversations/:id"
+        assert _path_tag("/v1/conversations/another-id") == "/v1/conversations/:id"
+
+    def test_unknown_path_becomes_other(self):
+        assert _path_tag("/random") == "other"

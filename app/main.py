@@ -207,36 +207,46 @@ async def health():
 @app.get(
     "/metrics",
     tags=["system"],
-    summary="In-process metrics snapshot",
+    summary="Prometheus-format metrics",
     description=(
-        "Authenticated metrics endpoint (`X-Service-Token` or JWT): request counts, intent distribution, "
-        "OpenAI token usage, RAG hit rate, 1h error rate, circuit-breaker states, plus live Redis "
-        "(active conversations) and Qdrant (collection size) counters."
+        "Authenticated metrics endpoint (`X-Service-Token` or JWT), Prometheus text format "
+        "(version=0.0.4). Exposes `healthai_requests_total`, `healthai_request_duration_seconds`, "
+        "`healthai_intent_total`, `healthai_openai_tokens_total`, `healthai_rag_requests_total`, "
+        "`healthai_circuit_breaker_state`, `healthai_active_conversations`, "
+        "`healthai_qdrant_collection_size`. Multi-worker safe via PROMETHEUS_MULTIPROC_DIR."
     ),
     dependencies=[Depends(auth_guard)],
 )
 async def get_metrics():
+    from fastapi import Response
+
     from .metrics import metrics as app_metrics
+    from .metrics import render_metrics
     from .services.circuit_breaker import openai_breaker, qdrant_breaker
 
-    snapshot = app_metrics.snapshot()
-    snapshot["openai_circuit_state"] = await openai_breaker.state
-    snapshot["qdrant_circuit_state"] = await qdrant_breaker.state
+    # Refresh the gauges that reflect external state before each scrape so the
+    # returned snapshot is current.
+    try:
+        app_metrics.set_circuit_breaker_state("openai", await openai_breaker.state)
+        app_metrics.set_circuit_breaker_state("qdrant", await qdrant_breaker.state)
+    except Exception:
+        logger.debug("circuit-breaker state read failed during /metrics")
 
     try:
-        r = get_redis()
-        keys = await r.keys(f"{settings.redis_prefix}:conv:*:turns")
-        snapshot["active_conversations"] = len(keys)
+        keys = await get_redis().keys(f"{settings.redis_prefix}:conv:*:turns")
+        app_metrics.set_active_conversations(len(keys))
     except Exception:
-        snapshot["active_conversations"] = -1
+        pass
 
     try:
         info = await get_qdrant().get_collection(settings.qdrant_collection)
-        snapshot["qdrant_collection_size"] = info.points_count
+        if info.points_count is not None:
+            app_metrics.set_qdrant_collection_size(int(info.points_count))
     except Exception:
-        snapshot["qdrant_collection_size"] = -1
+        pass
 
-    return snapshot
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)
 
 
 app.include_router(chat_router)

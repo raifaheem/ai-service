@@ -78,7 +78,7 @@ async def summarize_conversation(
                     "call_type": "summarize",
                 },
             )
-            metrics.record_openai_usage(_usage.prompt_tokens, _usage.completion_tokens)
+            metrics.record_openai_usage(_usage.prompt_tokens, _usage.completion_tokens, call_type="summarize")
         summary = (resp.choices[0].message.content or "").strip()
         return summary if summary else None
     except Exception:

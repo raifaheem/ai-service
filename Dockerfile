@@ -33,16 +33,26 @@ COPY app ./app
 
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser \
     && chown -R appuser:appgroup /app
+
+# prometheus_client multiprocess mode requires a writable dir that all gunicorn
+# workers share and that's wiped on container restart. /tmp/prom_multiproc is
+# that dir; each worker writes per-pid shard files there which the /metrics
+# handler aggregates on scrape.
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp/prom_multiproc
+RUN mkdir -p /tmp/prom_multiproc && chown -R appuser:appgroup /tmp/prom_multiproc
+
 USER appuser
 
 EXPOSE 8001
 
-# --graceful-timeout 30 matches _SHUTDOWN_TIMEOUT in app/main.py so SSE streams drain cleanly.
-CMD ["gunicorn", "app.main:app", \
-     "-k", "uvicorn.workers.UvicornWorker", \
-     "-w", "4", \
-     "--bind", "0.0.0.0:8001", \
-     "--timeout", "120", \
-     "--graceful-timeout", "30", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+ENV GUNICORN_WORKERS=4
+
+# --graceful-timeout 30 matches SHUTDOWN_TIMEOUT in app/lifecycle.py so SSE streams drain cleanly.
+CMD gunicorn app.main:app \
+     -k uvicorn.workers.UvicornWorker \
+     -w ${GUNICORN_WORKERS} \
+     --bind 0.0.0.0:8001 \
+     --timeout 120 \
+     --graceful-timeout 30 \
+     --access-logfile - \
+     --error-logfile -

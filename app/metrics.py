@@ -1,83 +1,149 @@
-import threading
-import time
-from collections import deque
+"""Prometheus metrics for health-ai-service.
+
+Previously metrics lived in a per-process dict, so with gunicorn -w 4 each
+scrape landed on one worker and saw only its slice of activity. This module
+uses prometheus_client with multiprocess mode, so any worker can expose the
+aggregate view for scraping.
+
+Multiprocess mode requires PROMETHEUS_MULTIPROC_DIR to be set and writable
+before any metric is instantiated. The Dockerfile sets /tmp/prom_multiproc
+and owns it to appuser. For local dev we fall back to the system temp dir so
+tests and uvicorn --reload work without extra config.
+
+The legacy call-site API (metrics.record_request / record_intent /
+record_openai_usage / record_rag_result) is preserved via _MetricsFacade so
+routers and middleware don't need to change.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+
+_PROM_DIR = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+if not _PROM_DIR:
+    _PROM_DIR = str(Path(tempfile.gettempdir()) / "healthai_prom_multiproc")
+    os.environ["PROMETHEUS_MULTIPROC_DIR"] = _PROM_DIR
+Path(_PROM_DIR).mkdir(parents=True, exist_ok=True)
+
+from prometheus_client import (  # noqa: E402  (must follow env setup)
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+    multiprocess,
+)
+from prometheus_client.exposition import CONTENT_TYPE_LATEST  # noqa: E402
+
+REQUESTS_TOTAL = Counter(
+    "healthai_requests_total",
+    "Total HTTP requests.",
+    ["status", "path_tag"],
+)
+
+REQUEST_DURATION = Histogram(
+    "healthai_request_duration_seconds",
+    "HTTP request duration.",
+    ["path_tag"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+INTENT_TOTAL = Counter(
+    "healthai_intent_total",
+    "Intent classification distribution.",
+    ["category", "risk_level"],
+)
+
+OPENAI_TOKENS = Counter(
+    "healthai_openai_tokens_total",
+    "OpenAI tokens consumed.",
+    ["type", "call_type"],  # type=prompt|completion, call_type=intent|generate|summarize
+)
+
+RAG_REQUESTS = Counter(
+    "healthai_rag_requests_total",
+    "RAG retrieval attempts.",
+    ["hit"],  # "true" | "false"
+)
+
+CIRCUIT_BREAKER_STATE = Gauge(
+    "healthai_circuit_breaker_state",
+    "Circuit breaker state: 0=closed, 1=half_open, 2=open.",
+    ["name"],
+    multiprocess_mode="max",  # if any worker observed open, report open
+)
+
+ACTIVE_CONVERSATIONS = Gauge(
+    "healthai_active_conversations",
+    "Approximate count of live conversation keys in Redis.",
+    multiprocess_mode="mostrecent",
+)
+
+QDRANT_COLLECTION_SIZE = Gauge(
+    "healthai_qdrant_collection_size",
+    "Points in the active Qdrant RAG collection.",
+    multiprocess_mode="mostrecent",
+)
+
+_STATE_VALUE = {"closed": 0, "half_open": 1, "open": 2}
 
 
-class Metrics:
-    """Thread-safe in-memory metrics collection for the application."""
+class _MetricsFacade:
+    """Legacy call-site API so routers / middleware don't have to change."""
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.requests_total: int = 0
-        self.requests_by_status: dict[int, int] = {}
-        self.requests_by_intent: dict[str, int] = {}
-        self.response_times: deque[float] = deque(maxlen=1000)
-        self.openai_tokens_prompt: int = 0
-        self.openai_tokens_completion: int = 0
-        self.rag_requests: int = 0
-        self.rag_hits: int = 0
-        self.errors_timestamps: deque[float] = deque(maxlen=10000)
+    def record_request(self, status: int, duration_ms: float, path_tag: str = "unknown") -> None:
+        REQUESTS_TOTAL.labels(status=str(status), path_tag=path_tag).inc()
+        REQUEST_DURATION.labels(path_tag=path_tag).observe(duration_ms / 1000.0)
 
-    def record_request(self, status_code: int, duration_ms: float) -> None:
-        with self._lock:
-            self.requests_total += 1
-            self.requests_by_status[status_code] = self.requests_by_status.get(status_code, 0) + 1
-            self.response_times.append(duration_ms)
-            if status_code >= 400:
-                self.errors_timestamps.append(time.time())
+    def record_intent(self, category: str, risk_level: str = "unknown") -> None:
+        INTENT_TOTAL.labels(category=category, risk_level=risk_level).inc()
 
-    def record_intent(self, category: str) -> None:
-        with self._lock:
-            self.requests_by_intent[category] = self.requests_by_intent.get(category, 0) + 1
-
-    def record_openai_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
-        with self._lock:
-            self.openai_tokens_prompt += prompt_tokens
-            self.openai_tokens_completion += completion_tokens
+    def record_openai_usage(
+        self,
+        prompt_tokens: int,
+        completion_tokens: int,
+        call_type: str = "generate",
+    ) -> None:
+        # Coerce defensively: mocked OpenAI response objects from tests sometimes
+        # hand us MagicMocks, and prometheus_client's Counter.inc does a numeric
+        # compare that would TypeError otherwise.
+        try:
+            p = int(prompt_tokens or 0)
+            c = int(completion_tokens or 0)
+        except (TypeError, ValueError):
+            return
+        OPENAI_TOKENS.labels(type="prompt", call_type=call_type).inc(p)
+        OPENAI_TOKENS.labels(type="completion", call_type=call_type).inc(c)
 
     def record_rag_result(self, hit: bool) -> None:
-        with self._lock:
-            self.rag_requests += 1
-            if hit:
-                self.rag_hits += 1
+        RAG_REQUESTS.labels(hit="true" if hit else "false").inc()
 
     def record_error(self) -> None:
-        with self._lock:
-            self.errors_timestamps.append(time.time())
+        # Errors are already captured by record_request's 4xx/5xx buckets;
+        # kept here so the old call sites (if any) stay valid.
+        REQUESTS_TOTAL.labels(status="500", path_tag="unknown").inc()
 
-    def snapshot(self) -> dict:
-        with self._lock:
-            now = time.time()
-            one_hour_ago = now - 3600
+    def set_circuit_breaker_state(self, name: str, state: str) -> None:
+        CIRCUIT_BREAKER_STATE.labels(name=name).set(_STATE_VALUE.get(state, 0))
 
-            errors_in_hour = sum(1 for ts in self.errors_timestamps if ts > one_hour_ago)
+    def set_active_conversations(self, count: int) -> None:
+        ACTIVE_CONVERSATIONS.set(count)
 
-            avg_response_time = 0.0
-            if self.response_times:
-                avg_response_time = round(sum(self.response_times) / len(self.response_times), 2)
-
-            rag_hit_rate = 0.0
-            if self.rag_requests > 0:
-                rag_hit_rate = round(self.rag_hits / self.rag_requests, 4)
-
-            error_rate = 0.0
-            if self.requests_total > 0:
-                error_rate = round(errors_in_hour / max(self.requests_total, 1), 4)
-
-            return {
-                "requests_total": self.requests_total,
-                "requests_by_status": dict(self.requests_by_status),
-                "requests_by_intent": dict(self.requests_by_intent),
-                "avg_response_time_ms": avg_response_time,
-                "openai_tokens_prompt": self.openai_tokens_prompt,
-                "openai_tokens_completion": self.openai_tokens_completion,
-                "openai_tokens_total": self.openai_tokens_prompt + self.openai_tokens_completion,
-                "rag_hit_rate": rag_hit_rate,
-                "rag_requests": self.rag_requests,
-                "rag_hits": self.rag_hits,
-                "error_rate_1h": error_rate,
-                "errors_in_last_hour": errors_in_hour,
-            }
+    def set_qdrant_collection_size(self, count: int) -> None:
+        QDRANT_COLLECTION_SIZE.set(count)
 
 
-metrics = Metrics()
+metrics = _MetricsFacade()
+
+
+def render_metrics() -> tuple[bytes, str]:
+    """Return (body, content_type) for the /metrics HTTP response.
+
+    In multiprocess mode every worker writes to files under PROMETHEUS_MULTIPROC_DIR;
+    a dedicated MultiProcessCollector aggregates them for the scrape response.
+    """
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+    return generate_latest(registry), CONTENT_TYPE_LATEST

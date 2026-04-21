@@ -23,6 +23,7 @@ lxml==6.0.2
 numpy==2.4.3
 openai==2.24.0
 portalocker==2.10.1
+prometheus-client==0.21.1
 protobuf==6.33.5
 pyasn1==0.6.2
 pycparser==3.0

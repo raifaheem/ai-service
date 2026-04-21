@@ -1,143 +1,114 @@
-import time
+"""Tests for prometheus_client-backed metrics facade (B.2).
 
-from app.metrics import Metrics
+The old per-attribute assertions (m.requests_total == 2) are gone — state lives
+in prometheus_client collectors. These tests exercise the facade by calling it
+and inspecting the underlying Counter/Histogram samples.
+"""
+
+from app.metrics import (
+    INTENT_TOTAL,
+    OPENAI_TOKENS,
+    RAG_REQUESTS,
+    REQUEST_DURATION,
+    REQUESTS_TOTAL,
+    metrics,
+    render_metrics,
+)
 
 
-def _fresh_metrics():
-    return Metrics()
+def _counter_value(counter, **labels) -> float:
+    """Read the current value of a labelled Counter sample."""
+    return counter.labels(**labels)._value.get()
+
+
+def _histogram_sum(histogram, **labels) -> float:
+    return histogram.labels(**labels)._sum.get()
 
 
 class TestRecordRequest:
-    def test_increments_total(self):
-        m = _fresh_metrics()
-        m.record_request(200, 50.0)
-        m.record_request(200, 30.0)
-        assert m.requests_total == 2
+    def test_increments_status_path_counter(self):
+        before = _counter_value(REQUESTS_TOTAL, status="200", path_tag="/v1/chat")
+        metrics.record_request(200, 50.0, path_tag="/v1/chat")
+        metrics.record_request(200, 30.0, path_tag="/v1/chat")
+        assert _counter_value(REQUESTS_TOTAL, status="200", path_tag="/v1/chat") == before + 2
 
-    def test_tracks_by_status(self):
-        m = _fresh_metrics()
-        m.record_request(200, 10.0)
-        m.record_request(200, 20.0)
-        m.record_request(404, 5.0)
-        m.record_request(500, 100.0)
-        assert m.requests_by_status[200] == 2
-        assert m.requests_by_status[404] == 1
-        assert m.requests_by_status[500] == 1
+    def test_tracks_different_statuses_separately(self):
+        before_200 = _counter_value(REQUESTS_TOTAL, status="200", path_tag="/health")
+        before_500 = _counter_value(REQUESTS_TOTAL, status="500", path_tag="/health")
 
-    def test_records_response_time(self):
-        m = _fresh_metrics()
-        m.record_request(200, 100.0)
-        m.record_request(200, 200.0)
-        assert len(m.response_times) == 2
+        metrics.record_request(200, 1.0, path_tag="/health")
+        metrics.record_request(500, 1.0, path_tag="/health")
 
-    def test_4xx_5xx_records_error_timestamp(self):
-        m = _fresh_metrics()
-        m.record_request(200, 10.0)
-        m.record_request(400, 10.0)
-        m.record_request(500, 10.0)
-        assert len(m.errors_timestamps) == 2
+        assert _counter_value(REQUESTS_TOTAL, status="200", path_tag="/health") == before_200 + 1
+        assert _counter_value(REQUESTS_TOTAL, status="500", path_tag="/health") == before_500 + 1
+
+    def test_records_duration_in_histogram(self):
+        before_sum = _histogram_sum(REQUEST_DURATION, path_tag="/v1/chat")
+        metrics.record_request(200, 150.0, path_tag="/v1/chat")
+        # 150ms → 0.15s; allow tiny float drift from repeated observations in the test run.
+        assert abs((_histogram_sum(REQUEST_DURATION, path_tag="/v1/chat") - before_sum) - 0.15) < 1e-6
 
 
 class TestRecordIntent:
-    def test_tracks_categories(self):
-        m = _fresh_metrics()
-        m.record_intent("symptom_check")
-        m.record_intent("symptom_check")
-        m.record_intent("lifestyle")
-        assert m.requests_by_intent["symptom_check"] == 2
-        assert m.requests_by_intent["lifestyle"] == 1
+    def test_labels_by_category_and_risk(self):
+        before = _counter_value(INTENT_TOTAL, category="symptom_check", risk_level="medium")
+        metrics.record_intent("symptom_check", risk_level="medium")
+        assert _counter_value(INTENT_TOTAL, category="symptom_check", risk_level="medium") == before + 1
+
+    def test_default_risk_level(self):
+        before = _counter_value(INTENT_TOTAL, category="lifestyle", risk_level="unknown")
+        metrics.record_intent("lifestyle")
+        assert _counter_value(INTENT_TOTAL, category="lifestyle", risk_level="unknown") == before + 1
 
 
 class TestRecordOpenaiUsage:
-    def test_accumulates_tokens(self):
-        m = _fresh_metrics()
-        m.record_openai_usage(100, 50)
-        m.record_openai_usage(200, 100)
-        assert m.openai_tokens_prompt == 300
-        assert m.openai_tokens_completion == 150
+    def test_tokens_split_by_type_and_call(self):
+        p_before = _counter_value(OPENAI_TOKENS, type="prompt", call_type="generate")
+        c_before = _counter_value(OPENAI_TOKENS, type="completion", call_type="generate")
+
+        metrics.record_openai_usage(100, 50, call_type="generate")
+
+        assert _counter_value(OPENAI_TOKENS, type="prompt", call_type="generate") == p_before + 100
+        assert _counter_value(OPENAI_TOKENS, type="completion", call_type="generate") == c_before + 50
+
+    def test_call_types_tracked_independently(self):
+        intent_before = _counter_value(OPENAI_TOKENS, type="prompt", call_type="intent")
+        summarize_before = _counter_value(OPENAI_TOKENS, type="prompt", call_type="summarize")
+
+        metrics.record_openai_usage(20, 10, call_type="intent")
+        metrics.record_openai_usage(30, 15, call_type="summarize")
+
+        assert _counter_value(OPENAI_TOKENS, type="prompt", call_type="intent") == intent_before + 20
+        assert _counter_value(OPENAI_TOKENS, type="prompt", call_type="summarize") == summarize_before + 30
 
 
 class TestRecordRagResult:
-    def test_tracks_hits_and_misses(self):
-        m = _fresh_metrics()
-        m.record_rag_result(True)
-        m.record_rag_result(True)
-        m.record_rag_result(False)
-        assert m.rag_requests == 3
-        assert m.rag_hits == 2
+    def test_tracks_hits_and_misses_separately(self):
+        hit_before = _counter_value(RAG_REQUESTS, hit="true")
+        miss_before = _counter_value(RAG_REQUESTS, hit="false")
+
+        metrics.record_rag_result(True)
+        metrics.record_rag_result(True)
+        metrics.record_rag_result(False)
+
+        assert _counter_value(RAG_REQUESTS, hit="true") == hit_before + 2
+        assert _counter_value(RAG_REQUESTS, hit="false") == miss_before + 1
 
 
-class TestRecordError:
-    def test_records_error_timestamp(self):
-        m = _fresh_metrics()
-        m.record_error()
-        assert len(m.errors_timestamps) == 1
+class TestRenderMetrics:
+    def test_returns_prometheus_text_format(self):
+        metrics.record_request(200, 10.0, path_tag="/health")
+        metrics.record_intent("general_health", risk_level="low")
+        metrics.record_openai_usage(10, 5, call_type="generate")
+        metrics.record_rag_result(True)
 
+        body, content_type = render_metrics()
+        assert content_type.startswith("text/plain")
+        assert b"healthai_requests_total" in body
+        assert b"healthai_intent_total" in body
+        assert b"healthai_openai_tokens_total" in body
+        assert b"healthai_rag_requests_total" in body
 
-class TestSnapshot:
-    def test_returns_expected_keys(self):
-        m = _fresh_metrics()
-        snap = m.snapshot()
-        expected_keys = {
-            "requests_total",
-            "requests_by_status",
-            "requests_by_intent",
-            "avg_response_time_ms",
-            "openai_tokens_prompt",
-            "openai_tokens_completion",
-            "openai_tokens_total",
-            "rag_hit_rate",
-            "rag_requests",
-            "rag_hits",
-            "error_rate_1h",
-            "errors_in_last_hour",
-        }
-        assert expected_keys == set(snap.keys())
-
-    def test_avg_response_time(self):
-        m = _fresh_metrics()
-        m.record_request(200, 100.0)
-        m.record_request(200, 200.0)
-        snap = m.snapshot()
-        assert snap["avg_response_time_ms"] == 150.0
-
-    def test_rag_hit_rate(self):
-        m = _fresh_metrics()
-        m.record_rag_result(True)
-        m.record_rag_result(False)
-        snap = m.snapshot()
-        assert snap["rag_hit_rate"] == 0.5
-
-    def test_rag_hit_rate_zero_requests(self):
-        m = _fresh_metrics()
-        snap = m.snapshot()
-        assert snap["rag_hit_rate"] == 0.0
-
-    def test_openai_tokens_total(self):
-        m = _fresh_metrics()
-        m.record_openai_usage(100, 50)
-        snap = m.snapshot()
-        assert snap["openai_tokens_total"] == 150
-
-    def test_error_rate_1h(self):
-        m = _fresh_metrics()
-        m.record_request(200, 10.0)
-        m.record_request(500, 10.0)
-        snap = m.snapshot()
-        assert snap["errors_in_last_hour"] == 1
-        assert snap["error_rate_1h"] > 0
-
-    def test_error_rate_excludes_old_errors(self):
-        m = _fresh_metrics()
-        m.record_request(200, 10.0)
-        # Manually inject an old error timestamp (>1 hour ago)
-        m.errors_timestamps.append(time.time() - 7200)
-        snap = m.snapshot()
-        assert snap["errors_in_last_hour"] == 0
-
-    def test_empty_metrics(self):
-        m = _fresh_metrics()
-        snap = m.snapshot()
-        assert snap["requests_total"] == 0
-        assert snap["avg_response_time_ms"] == 0.0
-        assert snap["openai_tokens_total"] == 0
+    def test_content_type_is_prometheus_v0_0_4(self):
+        _, content_type = render_metrics()
+        assert "version=0.0.4" in content_type

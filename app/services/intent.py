@@ -104,10 +104,17 @@ def _default_intent() -> IntentResult:
     )
 
 
-def _build_cache_key(message: str, history_tail: list[dict]) -> str:
-    payload = json.dumps({"m": message, "h": history_tail}, ensure_ascii=False, sort_keys=True)
+_INTENT_CACHE_VERSION = "v2"
+
+
+def _build_cache_key(message: str, history_tail: list[dict], locale: str) -> str:
+    payload = json.dumps(
+        {"m": message, "h": history_tail, "l": locale},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     digest = hashlib.md5(payload.encode(), usedforsecurity=False).hexdigest()
-    return f"{settings.redis_prefix}:intent:{digest}"
+    return f"{settings.redis_prefix}:intent:{_INTENT_CACHE_VERSION}:{digest}"
 
 
 async def _get_cached(redis_client, cache_key: str) -> IntentResult | None:
@@ -132,11 +139,12 @@ async def classify_intent(
     message: str,
     history: list[dict] | None = None,
     redis_client=None,
+    locale: str = "ru",
 ) -> IntentResult:
     history_tail = (history or [])[-2:]
 
     if redis_client:
-        cache_key = _build_cache_key(message, history_tail)
+        cache_key = _build_cache_key(message, history_tail, locale)
         cached = await _get_cached(redis_client, cache_key)
         if cached:
             return cached
@@ -168,7 +176,7 @@ async def classify_intent(
                     "call_type": "intent_classify",
                 },
             )
-            metrics.record_openai_usage(_usage.prompt_tokens, _usage.completion_tokens)
+            metrics.record_openai_usage(_usage.prompt_tokens, _usage.completion_tokens, call_type="intent")
         raw_json = (resp.choices[0].message.content or "").strip()
         data = json.loads(raw_json)
 

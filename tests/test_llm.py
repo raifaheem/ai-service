@@ -168,7 +168,7 @@ class TestGenerateHealthAnswer:
             from app.services.llm import generate_health_answer
             await generate_health_answer("Test", locale="en")
 
-        mock_metrics.record_openai_usage.assert_called_once_with(10, 20)
+        mock_metrics.record_openai_usage.assert_called_once_with(10, 20, call_type="generate")
 
     async def test_no_usage(self):
         completion = MockCompletion()
