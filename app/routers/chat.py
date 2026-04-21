@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 import contextlib
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from openai import APIConnectionError, APIStatusError, AuthenticationError, RateLimitError
 
@@ -421,6 +421,7 @@ Response headers include `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
 )
 async def chat_stream(
     req: ChatRequest,
+    request: Request,
     auth=Depends(auth_guard),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ):
@@ -578,6 +579,7 @@ async def chat_stream(
         finish_reason: str | None = None
 
         try:
+            client_gone = False
             async for ev in stream_health_answer(
                 user_message,
                 locale=locale,
@@ -588,6 +590,17 @@ async def chat_stream(
                 temperature=intent.temperature,
                 summary=summary,
             ):
+                # Cheap ASGI-buffered check — if the client hung up, stop pulling
+                # more tokens from OpenAI (saves $$$) and don't persist a half-
+                # finished answer.
+                if await request.is_disconnected():
+                    logger.info(
+                        "Client disconnected mid-stream, aborting %s",
+                        conversation_id,
+                    )
+                    client_gone = True
+                    break
+
                 if ev.get("type") == "delta":
                     text = ev.get("text", "")
                     if text:
@@ -598,6 +611,11 @@ async def chat_stream(
                     usage_payload = ev.get("usage")
                     model_name = ev.get("model")
                     finish_reason = ev.get("finish_reason")
+
+            if client_gone:
+                # Exit silently — the client is no longer reading; no point
+                # writing a `final` event or persisting the conversation turn.
+                return
 
             await openai_breaker.record_success()
             raw_answer = "".join(parts).strip()

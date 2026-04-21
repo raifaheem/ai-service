@@ -590,6 +590,83 @@ class TestSseRequestId:
         # The id is also what the middleware echoed in the response header.
         assert ids[0] == resp.headers.get("x-request-id")
 
+    async def test_stream_aborts_on_client_disconnect(self, mock_redis, mock_qdrant):
+        """When the client hangs up mid-stream, the generator stops pulling deltas and skips _persist_turns.
+
+        This is the B.6 cancellation guard — lets us stop burning OpenAI tokens
+        the moment the client is no longer reading, and prevents persisting a
+        half-finished answer turn.
+        """
+        mock_intent = IntentResult(
+            category="general_health",
+            confidence=0.9,
+            requires_followup=False,
+            detected_entities={},
+            risk_level="low",
+        )
+
+        async def slow_stream(*args, **kwargs):
+            for i in range(50):
+                yield {"type": "delta", "text": f"word{i} "}
+
+        persist_called = {"n": 0}
+
+        async def _track_persist(*args, **kwargs):
+            persist_called["n"] += 1
+
+        disconnect_after = {"chunks": 0, "fired": False}
+
+        class _FlakyRequest:
+            """Simulates a client that disconnects after 2 chunks have been read."""
+
+            async def is_disconnected(self) -> bool:
+                disconnect_after["chunks"] += 1
+                if disconnect_after["chunks"] >= 3:
+                    disconnect_after["fired"] = True
+                    return True
+                return False
+
+        # Patch the module-level symbols and run the generator directly — an
+        # ASGIClient can't easily simulate mid-stream disconnect without raw
+        # send/receive plumbing.
+        with (
+            patch("app.services.redis_client._redis", mock_redis),
+            patch("app.services.redis_client.get_redis", return_value=mock_redis),
+            patch("app.services.memory.get_redis", return_value=mock_redis),
+            patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
+            patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
+            patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
+            patch("app.routers.chat.stream_health_answer", side_effect=slow_stream),
+            patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
+            patch("app.routers.chat._persist_turns", side_effect=_track_persist),
+            patch("app.routers.chat.memory.get_history", new_callable=AsyncMock, return_value=[]),
+            patch("app.routers.chat.memory.get_owner", new_callable=AsyncMock, return_value=None),
+        ):
+            from app.routers.chat import chat_stream
+            from app.schemas import ChatRequest as _ChatRequest
+
+            req = _ChatRequest(message="hello", locale="en")
+            auth = {"auth": "service"}
+            fake_request = _FlakyRequest()
+
+            streaming_resp = await chat_stream(
+                req=req,
+                request=fake_request,  # type: ignore[arg-type]
+                auth=auth,
+                x_user_id="user-1",
+            )
+
+            # Consume the generator — disconnection should trigger early exit.
+            chunks = []
+            async for chunk in streaming_resp.body_iterator:
+                chunks.append(chunk)
+
+        assert disconnect_after["fired"], "disconnect poll was never triggered"
+        # Generator stopped early → neither final event nor persistence happened.
+        joined = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+        assert "event: final" not in joined
+        assert persist_called["n"] == 0
+
     async def test_stream_error_event_includes_request_id(self, mock_redis, mock_qdrant):
         """When the pipeline emits an `error` event (e.g. service_degraded), it carries request_id."""
         with (
