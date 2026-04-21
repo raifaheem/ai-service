@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +49,43 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_format: str = Field(default="text", alias="LOG_FORMAT")
+
+    _SERVICE_TOKEN_PLACEHOLDERS = frozenset(
+        {"", "change-me-in-prod", "changeme", "dev", "test", "test-token", "placeholder"}
+    )
+
+    @model_validator(mode="after")
+    def _validate_prod_safety(self):
+        if self.app_env != "production":
+            return self
+
+        if self.enable_dev_routes:
+            raise ValueError(
+                "ENABLE_DEV_ROUTES must be false when APP_ENV=production — "
+                "dev-only /v1/rag/* endpoints would expose internal operations."
+            )
+
+        # Redis must be password-protected in production. Both redis:// and rediss://
+        # URLs encode credentials as user:password@host — presence of '@' is the marker.
+        redis_url = (self.redis_url or "").strip()
+        if redis_url.startswith(("redis://", "rediss://")) and "@" not in redis_url:
+            raise ValueError(
+                "REDIS_URL must include a password in production "
+                "(e.g. redis://:secret@host:6379/0). Unauthenticated Redis is unsafe."
+            )
+
+        # SERVICE_TOKEN must not be a known placeholder. Tokens are comma-separated for
+        # rotation — all listed values must be non-placeholder.
+        tokens = [t.strip() for t in (self.service_token or "").split(",") if t.strip()]
+        if not tokens:
+            raise ValueError("SERVICE_TOKEN must be set in production.")
+        bad = [t for t in tokens if t.lower() in self._SERVICE_TOKEN_PLACEHOLDERS]
+        if bad:
+            raise ValueError(
+                f"SERVICE_TOKEN contains placeholder value(s): {bad}. " "Generate a strong random token for production."
+            )
+
+        return self
 
 
 settings = Settings()
