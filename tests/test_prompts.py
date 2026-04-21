@@ -67,19 +67,22 @@ def test_addon_prompts_minimum_length(addon, locale):
     )
 
 
-def test_emergency_addon_contains_hotline_ru():
-    text = ADDON_PROMPTS["emergency"]["ru"]
-    assert "112" in text or "103" in text
-
-
-def test_emergency_addon_contains_hotline_en():
-    text = ADDON_PROMPTS["emergency"]["en"]
-    assert "911" in text
-
-
-def test_emergency_addon_contains_hotline_kk():
-    text = ADDON_PROMPTS["emergency"]["kk"]
-    assert "112" in text or "103" in text
+@pytest.mark.parametrize("locale", LOCALES)
+def test_emergency_addon_uses_phone_placeholder(locale):
+    """The emergency addon must carry a {emergency_phone} placeholder,
+    not a hardcoded country-specific number. The placeholder is resolved
+    per-request by chat.py::_resolve_addon_prompt using the client-supplied
+    region hint (see D.1 in IMPROVEMENT_PLAN.md)."""
+    text = ADDON_PROMPTS["emergency"][locale]
+    assert "{emergency_phone}" in text, (
+        f"emergency/{locale} must carry a {{emergency_phone}} placeholder so the "
+        f"number can be injected per region. Got: {text[:200]}"
+    )
+    # Guard against regression: no hardcoded regional number in the raw template.
+    for hardcoded in ("911", "999", "000"):
+        assert hardcoded not in text, (
+            f"emergency/{locale} contains hardcoded '{hardcoded}' — should use {{emergency_phone}} instead"
+        )
 
 
 # --------------- get_prompt_addon ---------------

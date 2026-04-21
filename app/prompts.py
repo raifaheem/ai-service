@@ -295,12 +295,16 @@ The user is reaching out about their psychological or emotional state.
 - Психиатриялық диагноз қойма және психотропты дәрі-дәрмектерді ұсынба.
 """.strip(),
     },
+    # Emergency-phone number is injected per-request via str.format({emergency_phone: ...})
+    # in chat.py::_resolve_addon_prompt, resolved from (region, locale) by
+    # app.services.i18n.get_emergency_phone. The raw template intentionally carries
+    # the placeholder, not a hardcoded number.
     "emergency": {
         "ru": """
 ЭКСТРЕННАЯ СИТУАЦИЯ:
 Обнаружены признаки неотложного состояния. Ответь кратко и по делу.
 
-НЕМЕДЛЕННО ПОРЕКОМЕНДУЙ ВЫЗВАТЬ СКОРУЮ ПОМОЩЬ: 112 или 103.
+НЕМЕДЛЕННО ПОРЕКОМЕНДУЙ ВЫЗВАТЬ СКОРУЮ ПОМОЩЬ ({emergency_phone}).
 
 Предоставь краткие инструкции первой помощи, если применимо:
 - Что делать до приезда скорой
@@ -314,7 +318,7 @@ The user is reaching out about their psychological or emotional state.
 EMERGENCY SITUATION:
 Signs of an urgent condition have been detected. Respond briefly and to the point.
 
-IMMEDIATELY RECOMMEND CALLING EMERGENCY SERVICES: 911.
+IMMEDIATELY RECOMMEND CALLING EMERGENCY SERVICES ({emergency_phone}).
 
 Provide brief first-aid instructions if applicable:
 - What to do while waiting for emergency services
@@ -328,7 +332,7 @@ End your response with: "Do not delay seeking emergency medical care."
 ШҰҒЫЛ ЖАҒДАЙ:
 Шұғыл жағдай белгілері анықталды. Қысқа және нақты жауап бер.
 
-ДЕРЕУ ЖЕДЕЛ ЖӘРДЕМДІ ШАҚЫРУДЫ ҰСЫН: 112 немесе 103.
+ДЕРЕУ ЖЕДЕЛ ЖӘРДЕМДІ ШАҚЫРУДЫ ҰСЫН ({emergency_phone}).
 
 Қолданылатын болса, қысқаша алғашқы көмек нұсқауларын бер:
 - Жедел жәрдем келгенше не істеу керек

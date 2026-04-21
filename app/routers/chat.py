@@ -25,7 +25,7 @@ from ..services.audit import (
 )
 from ..services.circuit_breaker import DEGRADED_MESSAGES, openai_breaker
 from ..services.content_filter import check_response_safety
-from ..services.i18n import get_disclaimer, get_prompt_addon, normalize_locale
+from ..services.i18n import get_disclaimer, get_emergency_phone, get_prompt_addon, normalize_locale
 from ..services.intent import IntentResult, classify_intent
 from ..services.llm import generate_health_answer, stream_health_answer
 from ..services.rag import build_rag_context, compress_sources
@@ -48,11 +48,16 @@ OFF_TOPIC_MESSAGES = {
 }
 
 
-def _resolve_addon_prompt(intent: IntentResult, locale: str) -> str | None:
+def _resolve_addon_prompt(intent: IntentResult, locale: str, region: str | None = None) -> str | None:
     addon_name = intent.addon_name
     if not addon_name:
         return None
     addon = get_prompt_addon(addon_name, locale)
+    if addon and addon_name == "emergency":
+        # Inject the region-aware phone number into the template placeholder.
+        # The template carries {emergency_phone} verbatim; format it exactly once
+        # here so the LLM sees a concrete number (or a neutral phrase fallback).
+        addon = addon.format(emergency_phone=get_emergency_phone(region, locale))
     if addon and intent.requires_followup:
         followup_hint = {
             "ru": "\nВАЖНО: Информации недостаточно. Задай пользователю уточняющие вопросы прежде чем давать рекомендации.",
@@ -344,7 +349,7 @@ async def chat(
         )
 
     summary, trimmed_history = await _get_or_create_summary(conversation_id, history, locale)
-    addon_prompt = _resolve_addon_prompt(intent, locale)
+    addon_prompt = _resolve_addon_prompt(intent, locale, req.region)
 
     # RAG with fallback
     rag_context: str = ""
@@ -582,7 +587,7 @@ async def chat_stream(
         return StreamingResponse(off_topic_generator(), media_type="text/event-stream", headers=headers)
 
     summary, trimmed_history = await _get_or_create_summary(conversation_id, history, locale)
-    addon_prompt = _resolve_addon_prompt(intent, locale)
+    addon_prompt = _resolve_addon_prompt(intent, locale, req.region)
 
     # RAG with fallback
     rag_context: str = ""

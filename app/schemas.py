@@ -93,6 +93,7 @@ class HistoryTurn(BaseModel):
 
 
 _UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+_REGION_PATTERN = r"^[A-Za-z]{2}$"
 _MAX_METADATA_BYTES = 5120  # 5KB
 
 
@@ -139,6 +140,15 @@ class ChatRequest(BaseModel):
             "same (user_id, idempotency_key) was answered in the last 10 minutes, the cached response is "
             "returned instead of running the pipeline again. Applies only to POST /v1/chat (not the SSE "
             "streaming endpoint). Use a fresh UUID per logical user action."
+        ),
+    )
+    region: str | None = Field(
+        default=None,
+        pattern=_REGION_PATTERN,
+        description=(
+            "Optional ISO 3166-1 alpha-2 country code (e.g. 'KZ', 'US', 'GB'). Used to localize "
+            "the emergency-phone number in the system prompt when an emergency intent fires. "
+            "Unknown codes and omission fall back to a locale-appropriate default."
         ),
     )
 

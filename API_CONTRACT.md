@@ -120,6 +120,8 @@ curl -X POST http://localhost:8001/v1/chat \
 | `conversation_id` | string | UUID v4, optional | Server generates one when omitted. Ownership is locked on first write. |
 | `history` | array | optional | When provided, replaces server-stored history (trimmed to last 8). |
 | `metadata` | object | ≤ 5 KB JSON | Free-form client metadata. |
+| `region` | string | ISO 3166-1 alpha-2, optional | Used to localize the emergency-phone number on emergency-intent replies (e.g. `KZ` → `112 / 103`, `US` → `911`, `GB` → `999`). Unknown/omitted values fall back to a locale-specific default. |
+| `idempotency_key` | string | ≤ 64 chars, optional | Scoped per user. A repeat request within 10 min returns the cached response. Sync `/v1/chat` only. |
 
 ---
 
