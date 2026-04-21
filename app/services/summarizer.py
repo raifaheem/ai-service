@@ -32,6 +32,9 @@ SUMMARY_PROMPTS = {
 SUMMARIZE_THRESHOLD = 8
 # Keep this many recent turns unsummarized
 KEEP_RECENT_TURNS = 6
+# Rerun summarization once this many new turns have accumulated since the last
+# summary — prevents the summary from freezing at the moment of first creation.
+RESUMMARIZE_AFTER_N_TURNS = 6
 
 
 async def summarize_conversation(

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import uuid
@@ -12,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from openai import APIConnectionError, APIStatusError, AuthenticationError, RateLimitError
 
 from ..context import set_conversation_id, set_user_id
+from ..lifecycle import is_shutting_down, register_stream
 from ..metrics import metrics
 from ..schemas import ChatIntent, ChatRequest, ChatResponse, ChatSource
 from ..security import auth_guard, resolve_user_id
@@ -24,7 +26,12 @@ from ..services.llm import generate_health_answer, stream_health_answer
 from ..services.rag import build_rag_context, compress_sources
 from ..services.rate_limit import enforce_rate_limit
 from ..services.safety import INJECTION_REFUSAL, detect_injection, sanitize_input
-from ..services.summarizer import get_turns_to_summarize, should_summarize, summarize_conversation
+from ..services.summarizer import (
+    RESUMMARIZE_AFTER_N_TURNS,
+    get_turns_to_summarize,
+    should_summarize,
+    summarize_conversation,
+)
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -59,34 +66,75 @@ def _get_redis_or_none():
         return None
 
 
+async def _persist_turns(
+    conversation_id: str,
+    user_message: str,
+    assistant_message: str,
+    user_id: str,
+    topic: str,
+    turn_count: int | None = None,
+) -> None:
+    try:
+        await memory.append_turns(
+            conversation_id,
+            [
+                memory.make_turn("user", user_message),
+                memory.make_turn("assistant", assistant_message),
+            ],
+            user_id=user_id,
+        )
+        meta_update: dict[str, Any] = {"topic": topic}
+        if turn_count is not None:
+            meta_update["turn_count"] = turn_count
+        await memory.update_metadata(conversation_id, **meta_update)
+    except Exception:
+        logger.exception("Failed to persist conversation %s to Redis", conversation_id)
+
+
 async def _get_or_create_summary(
     conversation_id: str,
     history: list[dict],
     locale: str,
 ) -> tuple[str | None, list[dict]]:
-    """Get existing summary or create one if conversation is long enough.
+    """Get existing summary or (re)create one if enough new turns accumulated.
 
     Returns (summary, trimmed_history) where trimmed_history contains
     only the recent turns to send to the LLM.
+
+    Resummarizes when either there's no summary yet, or when
+    RESUMMARIZE_AFTER_N_TURNS turns have been added since the last summary.
+    An existing summary without meta (pre-migration) is treated as stale,
+    so the first qualifying chat after deploy refreshes it.
     """
     if not should_summarize(len(history)):
         return None, history
 
-    # Check for existing summary
-    existing_summary = None
+    existing_summary: str | None = None
+    summary_meta: dict | None = None
     with contextlib.suppress(Exception):
         existing_summary = await memory.get_summary(conversation_id)
+        summary_meta = await memory.get_summary_meta(conversation_id)
+
+    if summary_meta:
+        turns_since_last = len(history) - int(summary_meta.get("turn_count_at_summary", 0))
+    else:
+        # No meta recorded — either no prior summary, or an old one from before this
+        # feature landed. Treat all current history as "since last summary" so the
+        # pipeline refreshes on the next qualifying request.
+        turns_since_last = len(history)
+
+    needs_resummarize = (not existing_summary) or (turns_since_last >= RESUMMARIZE_AFTER_N_TURNS)
 
     old_turns, recent_turns = get_turns_to_summarize(history)
 
-    if not existing_summary and old_turns:
+    if needs_resummarize and old_turns:
         try:
             new_summary = await summarize_conversation(old_turns, locale=locale)
             if new_summary:
-                await memory.set_summary(conversation_id, new_summary)
+                await memory.set_summary_with_meta(conversation_id, new_summary, len(history))
                 existing_summary = new_summary
         except Exception:
-            logger.exception("Failed to summarize conversation %s", conversation_id)
+            logger.exception("Failed to resummarize conversation %s", conversation_id)
 
     return existing_summary, recent_turns
 
@@ -212,9 +260,20 @@ async def chat(
     rate_limit_id = f"user:{user_id}"
     await enforce_rate_limit(rate_limit_id)
 
-    # Safety: detect prompt injection
+    if req.conversation_id:
+        try:
+            owner = await memory.get_owner(conversation_id)
+        except Exception:
+            logger.warning("Owner lookup failed for %s; proceeding without ownership check", conversation_id)
+            owner = None
+        if owner and owner != user_id:
+            raise HTTPException(status_code=403, detail="Access denied to this conversation")
+
+    # Safety: detect prompt injection (checked on raw input, then sanitized copy is persisted)
     if detect_injection(req.message):
+        sanitized = sanitize_input(req.message)
         refusal = INJECTION_REFUSAL.get(locale, INJECTION_REFUSAL["ru"])
+        await _persist_turns(conversation_id, sanitized, refusal, user_id, topic="blocked_injection")
         return ChatResponse(
             answer=refusal,
             disclaimer=disclaimer,
@@ -225,22 +284,25 @@ async def chat(
     # Safety: sanitize input
     user_message = sanitize_input(req.message)
 
-    if req.conversation_id:
-        owner = await memory.get_owner(conversation_id)
-        if owner and owner != user_id:
-            raise HTTPException(status_code=403, detail="Access denied to this conversation")
-
     history = request_history_to_messages(req)
     if not history:
         turns = await memory.get_history(conversation_id)
         history = [{"role": t.role, "content": t.content} for t in turns]
 
     redis_client = _get_redis_or_none()
-    intent = await classify_intent(user_message, history=history, redis_client=redis_client)
+    intent = await classify_intent(user_message, history=history, redis_client=redis_client, locale=locale)
     metrics.record_intent(intent.category)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
+        await _persist_turns(
+            conversation_id,
+            user_message,
+            off_topic_answer,
+            user_id,
+            topic="off_topic",
+            turn_count=len(history) + 2,
+        )
         return ChatResponse(
             answer=off_topic_answer,
             disclaimer=disclaimer,
@@ -297,22 +359,14 @@ async def chat(
     else:
         answer_to_user = raw_answer
 
-    try:
-        await memory.append_turns(
-            conversation_id,
-            [
-                memory.make_turn("user", user_message),
-                memory.make_turn("assistant", raw_answer),
-            ],
-            user_id=user_id,
-        )
-        await memory.update_metadata(
-            conversation_id,
-            topic=intent.category,
-            turn_count=len(history) + 2,
-        )
-    except Exception:
-        logger.exception("Failed to persist conversation %s to Redis", conversation_id)
+    await _persist_turns(
+        conversation_id,
+        user_message,
+        raw_answer,
+        user_id,
+        topic=intent.category,
+        turn_count=len(history) + 2,
+    )
 
     return ChatResponse(
         answer=answer_to_user,
@@ -381,9 +435,20 @@ async def chat_stream(
     rate_limit_id = f"user:{user_id}"
     await enforce_rate_limit(rate_limit_id)
 
+    if req.conversation_id:
+        try:
+            owner = await memory.get_owner(conversation_id)
+        except Exception:
+            logger.warning("Owner lookup failed for %s; proceeding without ownership check", conversation_id)
+            owner = None
+        if owner and owner != user_id:
+            raise HTTPException(status_code=403, detail="Access denied to this conversation")
+
     # Safety: detect prompt injection
     if detect_injection(req.message):
+        sanitized = sanitize_input(req.message)
         refusal = INJECTION_REFUSAL.get(locale, INJECTION_REFUSAL["ru"])
+        await _persist_turns(conversation_id, sanitized, refusal, user_id, topic="blocked_injection")
 
         async def injection_generator():
             yield _sse("meta", {"conversation_id": conversation_id})
@@ -408,22 +473,25 @@ async def chat_stream(
     # Safety: sanitize input
     user_message = sanitize_input(req.message)
 
-    if req.conversation_id:
-        owner = await memory.get_owner(conversation_id)
-        if owner and owner != user_id:
-            raise HTTPException(status_code=403, detail="Access denied to this conversation")
-
     history = request_history_to_messages(req)
     if not history:
         turns = await memory.get_history(conversation_id)
         history = [{"role": t.role, "content": t.content} for t in turns]
 
     redis_client = _get_redis_or_none()
-    intent = await classify_intent(user_message, history=history, redis_client=redis_client)
+    intent = await classify_intent(user_message, history=history, redis_client=redis_client, locale=locale)
     metrics.record_intent(intent.category)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
+        await _persist_turns(
+            conversation_id,
+            user_message,
+            off_topic_answer,
+            user_id,
+            topic="off_topic",
+            turn_count=len(history) + 2,
+        )
 
         async def off_topic_generator():
             yield _sse("meta", {"conversation_id": conversation_id})
@@ -488,7 +556,21 @@ async def chat_stream(
         return StreamingResponse(degraded_generator(), media_type="text/event-stream", headers=headers)
 
     async def event_generator():
+        task = asyncio.current_task()
+        if task is not None:
+            register_stream(task)
         yield _sse("meta", {"conversation_id": conversation_id})
+
+        if is_shutting_down():
+            yield _sse(
+                "error",
+                {
+                    "conversation_id": conversation_id,
+                    "code": "service_degraded",
+                    "message": DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"]),
+                },
+            )
+            return
 
         parts: list[str] = []
         usage_payload: dict | None = None
@@ -525,22 +607,14 @@ async def chat_stream(
             if disclaimer.lower() not in answer_to_user.lower():
                 answer_to_user = f"{answer_to_user}\n\n{disclaimer}"
 
-            try:
-                await memory.append_turns(
-                    conversation_id,
-                    [
-                        memory.make_turn("user", user_message),
-                        memory.make_turn("assistant", raw_answer),
-                    ],
-                    user_id=user_id,
-                )
-                await memory.update_metadata(
-                    conversation_id,
-                    topic=intent.category,
-                    turn_count=len(history) + 2,
-                )
-            except Exception:
-                logger.exception("Failed to persist conversation %s to Redis", conversation_id)
+            await _persist_turns(
+                conversation_id,
+                user_message,
+                raw_answer,
+                user_id,
+                topic=intent.category,
+                turn_count=len(history) + 2,
+            )
 
             yield _sse(
                 "final",

@@ -1,18 +1,19 @@
 """Extended memory service tests — covers async Redis operations."""
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from app.services.memory import (
-    get_history,
     append_turns,
-    get_owner,
-    get_ttl,
-    get_metadata,
-    set_metadata,
     delete_conversation,
+    get_history,
+    get_metadata,
+    get_owner,
+    get_summary_meta,
+    get_ttl,
     make_turn,
+    set_metadata,
+    set_summary_with_meta,
 )
 
 
@@ -184,13 +185,62 @@ class TestGetMetadataCorrupt:
 class TestDeleteConversation:
     async def test_deletes_all_keys(self):
         mock_redis = AsyncMock()
-        mock_redis.delete = AsyncMock(return_value=4)
+        mock_redis.delete = AsyncMock(return_value=5)
 
         with patch("app.services.memory.get_redis", return_value=mock_redis):
             result = await delete_conversation("conv-1")
 
-        assert result == 4
+        assert result == 5
         mock_redis.delete.assert_called_once()
-        # Should delete 4 keys: turns, owner, summary, meta
+        # Should delete 5 keys: turns, owner, summary, summary_meta, meta
         args = mock_redis.delete.call_args[0]
-        assert len(args) == 4
+        assert len(args) == 5
+        assert any("summary_meta" in k for k in args)
+
+
+class TestSummaryMeta:
+    async def test_get_summary_meta_returns_parsed_dict(self):
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=json.dumps({"turn_count_at_summary": 12}))
+
+        with patch("app.services.memory.get_redis", return_value=mock_redis):
+            result = await get_summary_meta("conv-1")
+
+        assert result == {"turn_count_at_summary": 12}
+
+    async def test_get_summary_meta_returns_none_when_missing(self):
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+
+        with patch("app.services.memory.get_redis", return_value=mock_redis):
+            result = await get_summary_meta("conv-1")
+
+        assert result is None
+
+    async def test_get_summary_meta_returns_none_on_corrupt_json(self):
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value="{{not json")
+
+        with patch("app.services.memory.get_redis", return_value=mock_redis):
+            result = await get_summary_meta("conv-1")
+
+        assert result is None
+
+    async def test_set_summary_with_meta_writes_both_keys(self):
+        from conftest import _FakeRedis  # stateful fake from conftest.py
+
+        fake = _FakeRedis()
+
+        with patch("app.services.memory.get_redis", return_value=fake):
+            await set_summary_with_meta("conv-1", "the summary text", turn_count=14)
+
+        # Both keys present with correct values.
+        keys = await fake.keys("*")
+        summary_keys = [k for k in keys if k.endswith(":summary")]
+        meta_keys = [k for k in keys if k.endswith(":summary_meta")]
+        assert summary_keys and meta_keys
+
+        stored_summary = await fake.get(summary_keys[0])
+        stored_meta = await fake.get(meta_keys[0])
+        assert stored_summary == "the summary text"
+        assert json.loads(stored_meta) == {"turn_count_at_summary": 14}

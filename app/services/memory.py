@@ -33,6 +33,10 @@ def _summary_key(conversation_id: str) -> str:
     return f"{settings.redis_prefix}:conv:{conversation_id}:summary"
 
 
+def _summary_meta_key(conversation_id: str) -> str:
+    return f"{settings.redis_prefix}:conv:{conversation_id}:summary_meta"
+
+
 def _meta_key(conversation_id: str) -> str:
     return f"{settings.redis_prefix}:conv:{conversation_id}:meta"
 
@@ -111,6 +115,38 @@ async def set_summary(conversation_id: str, summary: str) -> None:
     await r.set(_summary_key(conversation_id), summary, ex=ttl)
 
 
+async def get_summary_meta(conversation_id: str) -> dict | None:
+    """Return stored metadata for the latest summary (e.g. turn_count_at_summary) or None."""
+    r = get_redis()
+    raw = await r.get(_summary_meta_key(conversation_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+async def set_summary_with_meta(
+    conversation_id: str,
+    summary: str,
+    turn_count: int,
+) -> None:
+    """Atomically persist a summary and the turn count observed when it was produced.
+
+    The turn count lets the chat pipeline decide when to resummarize — otherwise a
+    conversation's summary stays frozen at the moment of first summarization and
+    later turns drop out of context.
+    """
+    r = get_redis()
+    ttl = int(settings.redis_ttl_seconds)
+    meta_payload = json.dumps({"turn_count_at_summary": int(turn_count)}, ensure_ascii=False)
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.set(_summary_key(conversation_id), summary, ex=ttl)
+        pipe.set(_summary_meta_key(conversation_id), meta_payload, ex=ttl)
+        await pipe.execute()
+
+
 # --------------- Conversation Metadata ---------------
 
 
@@ -145,5 +181,6 @@ async def delete_conversation(conversation_id: str) -> int:
         _key(conversation_id),
         _owner_key(conversation_id),
         _summary_key(conversation_id),
+        _summary_meta_key(conversation_id),
         _meta_key(conversation_id),
     )
