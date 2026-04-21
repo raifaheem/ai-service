@@ -36,6 +36,10 @@ Fixtures in [tests/conftest.py](tests/conftest.py) mock Redis/Qdrant/OpenAI (`mo
 
 ## Architecture
 
+### `/v1/triage/session` — pre-consultation triage ([app/routers/triage.py](app/routers/triage.py))
+
+Server-driven symptom intake — a fixed 10-step form ([app/services/triage.py](app/services/triage.py) `TRIAGE_FORM`). Each POST advances one step: the router calls `normalize_answer` (one LLM JSON-response call) to map the user's free text to a structured value + red-flag signal, then `advance()` mutates the session. After the last step a second LLM call (`build_report`) emits the clinician-facing report — `{clinical_summary, structured, specialist_recommendation, detected_red_flags}`. `specialist_recommendation.category` is a closed enum (see [app/prompts_triage.py](app/prompts_triage.py) `SPECIALIST_CATEGORIES`); out-of-enum values fall back to `gp`. Red flags short-circuit the session at any step and emit an emergency_phone resolved via [D.1 `get_emergency_phone`](app/services/i18n.py). State persists in Redis under `healthai:triage:{session_id}:{state,owner}` ([app/services/triage_memory.py](app/services/triage_memory.py)); same TTL + owner-first-writer-wins pattern as chat conversations. No SSE — Q&A is short, streaming isn't needed.
+
 ### `/v1/chat` + `/v1/chat/stream` pipeline ([app/routers/chat.py](app/routers/chat.py))
 
 Same pipeline, JSON vs SSE (`meta`/`delta`/`final`/`error`):

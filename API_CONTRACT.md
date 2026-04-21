@@ -262,6 +262,101 @@ These endpoints are intentionally omitted from the Laravel migration table in §
 
 ---
 
+### 2.11 Pre-consultation triage — `POST /v1/triage/session`
+
+Server-driven symptom intake: a fixed 10-step form that collects the chief complaint, onset, trajectory, severity (1–10), accompanying symptoms, triggers, relevant history, current medications, allergies, and an explicit red-flag screen. The server owns the step sequence; the client just forwards the user's free-text answer each turn. Output is a clinician-facing JSON report with a specialist routing recommendation from a closed enum.
+
+**Start (no `session_id`)**
+
+```http
+POST /v1/triage/session HTTP/1.1
+Content-Type: application/json
+X-Service-Token: <token>
+X-User-Id: 42
+
+{"locale": "en", "region": "KZ"}
+```
+
+Response:
+
+```json
+{
+  "session_id": "c3a1b2d4-5678-4abc-9def-0123456789ab",
+  "state": "in_progress",
+  "step_index": 0,
+  "total_steps": 10,
+  "next_step": {
+    "step_id": "primary_complaint",
+    "question": "I will ask a few short questions to prepare a summary for your clinician. What brings you in today? …",
+    "kind": "free_text"
+  },
+  "disclaimer": "This is not a medical diagnosis and does not replace consultation with a doctor."
+}
+```
+
+**Advance (`session_id` + `answer`)**
+
+```http
+POST /v1/triage/session HTTP/1.1
+Content-Type: application/json
+X-Service-Token: <token>
+X-User-Id: 42
+
+{
+  "session_id": "c3a1b2d4-5678-4abc-9def-0123456789ab",
+  "answer": "Pulsating headache on the right side, started about three days ago.",
+  "locale": "en",
+  "region": "KZ"
+}
+```
+
+Response shapes by `state`:
+
+- `in_progress` → `next_step: {step_id, question, kind, choices?, range?, clarification?}`. `clarification` is set when the server wants the user to restate (max 2 per step, then force-accepted as unparsed).
+- `completed` → `report: {clinical_summary, structured, specialist_recommendation: {category, rationale}, detected_red_flags}`. `category` is one of `gp, emergency_room, urgent_care, cardiologist, neurologist, gastroenterologist, dermatologist, endocrinologist, pulmonologist, psychiatrist, gynecologist, urologist, orthopedist, otolaryngologist`; out-of-enum values fall back to `gp`.
+- `red_flag_exit` → `emergency_message` (locale-specific), `detected_red_flag`, `emergency_phone`. The phone is resolved via [D.1 regionalization](#) — `region=KZ` → `"112 / 103"`, `region=US` → `"911"`, unknown region → locale-neutral default.
+
+**Request schema**
+
+| Field | Type | Constraint | Notes |
+| --- | --- | --- | --- |
+| `session_id` | string | UUID v4, optional | Omit on first request — server creates one. |
+| `answer` | string | 1–2000 chars | Required when `session_id` is supplied. |
+| `locale` | string | `ru` / `en` / `kk` | Unknown values fold to `ru`. |
+| `region` | string | ISO 3166-1 alpha-2, optional | Only used if a red flag fires — picks the emergency phone. |
+
+**Session step table**
+
+| Index | step_id | kind | Red-flag check |
+| --- | --- | --- | --- |
+| 0 | `primary_complaint` | free_text | yes |
+| 1 | `onset` | free_text | — |
+| 2 | `trajectory` | choice (worsening/stable/improving) | — |
+| 3 | `severity` | int_scale (1–10) | — |
+| 4 | `accompanying` | free_text | yes |
+| 5 | `triggers` | free_text | — |
+| 6 | `relevant_history` | free_text | — |
+| 7 | `current_meds` | free_text | — |
+| 8 | `allergies` | free_text | — |
+| 9 | `explicit_red_flags` | boolean | yes |
+
+**Status codes**
+
+| Status | When |
+| --- | --- |
+| `400` | `answer` missing when `session_id` supplied. |
+| `403` | Session belongs to a different user. |
+| `404` | Session not found or expired. |
+| `409` | Session already terminated (`red_flag_exit` or `completed`) — start a new one. |
+| `429` | Rate limit exceeded (same per-user bucket as `/v1/chat`). |
+
+**Recovery and cancel**
+
+- `GET /v1/triage/session/{session_id}` — returns `{session_id, state, step_index, total_steps, locale, region, created_at, updated_at, ttl_seconds}`. Does NOT return collected answers (by design — those belong in the final report and in the audit log).
+- `DELETE /v1/triage/session/{session_id}` — idempotent abandon. Clears Redis state; 404 if nothing existed.
+
+---
+
 ## 3. HTTP error codes
 
 | Status | When |

@@ -22,6 +22,7 @@ from .routers.articles import router as articles_router
 from .routers.chat import router as chat_router
 from .routers.conversations import router as conv_router
 from .routers.rag import router as rag_router
+from .routers.triage import router as triage_router
 from .services.intent_embeddings import initialize_exemplar_embeddings
 from .services.redis_client import close_redis, get_redis, init_redis
 from .services.vector_client import close_qdrant, get_qdrant, init_qdrant
@@ -74,6 +75,10 @@ PHP integration examples, SSE event shapes, and error-code reference.
 _OPENAPI_TAGS = [
     {"name": "chat", "description": "Medical consultation endpoints (sync JSON + SSE streaming)."},
     {"name": "conversations", "description": "Retrieve and delete conversation history (owner-scoped)."},
+    {
+        "name": "triage",
+        "description": "Pre-consultation triage: server-driven symptom intake → clinician-facing report.",
+    },
     {"name": "articles", "description": "Ingest medical articles into the RAG corpus."},
     {"name": "dev-rag", "description": "Dev-only RAG inspection (requires `ENABLE_DEV_ROUTES=true`)."},
     {"name": "system", "description": "Liveness, metrics, service root."},
@@ -269,6 +274,7 @@ async def get_metrics():
 app.include_router(chat_router)
 app.include_router(conv_router)
 app.include_router(articles_router)
+app.include_router(triage_router)
 
 if settings.enable_dev_routes:
     app.include_router(rag_router)

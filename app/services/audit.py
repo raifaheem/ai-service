@@ -40,6 +40,13 @@ EVENT_CHAT_ANSWER = "chat.answer"
 EVENT_CHAT_REFUSAL = "chat.refusal"
 EVENT_CHAT_INJECTION_BLOCKED = "chat.injection_blocked"
 EVENT_CONVERSATION_DELETE = "conversation.delete"
+# Triage events (D.3.a). Payloads carry identifiers + step metadata only —
+# never raw user answers or the clinical summary text.
+EVENT_TRIAGE_START = "triage.start"
+EVENT_TRIAGE_STEP = "triage.step"
+EVENT_TRIAGE_COMPLETE = "triage.complete"
+EVENT_TRIAGE_RED_FLAG_EXIT = "triage.red_flag_exit"
+EVENT_TRIAGE_ABANDONED = "triage.abandoned"
 
 
 async def record_audit_event(
