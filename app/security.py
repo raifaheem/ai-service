@@ -1,7 +1,18 @@
+import hmac
+
+import jwt
 from fastapi import Header, HTTPException
-from jose import JWTError, jwt
+from jwt.exceptions import PyJWTError
 
 from .config import settings
+
+# PyJWT uses a single 'require' list for mandatory claims, not separate flags.
+_JWT_OPTIONS = {
+    "verify_exp": True,
+    "verify_iat": True,
+    "verify_signature": True,
+    "require": ["exp", "sub"],
+}
 
 
 def auth_guard(
@@ -9,8 +20,8 @@ def auth_guard(
     x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
 ):
     if x_service_token:
-        valid_tokens = {t.strip() for t in settings.service_token.split(",") if t.strip()}
-        if x_service_token not in valid_tokens:
+        valid_tokens = [t.strip() for t in settings.service_token.split(",") if t.strip()]
+        if not any(hmac.compare_digest(x_service_token, t) for t in valid_tokens):
             raise HTTPException(status_code=401, detail="Invalid service token")
         return {"auth": "service"}
 
@@ -19,9 +30,14 @@ def auth_guard(
         if not settings.jwt_public_key:
             raise HTTPException(status_code=401, detail="JWT auth not configured")
         try:
-            payload = jwt.decode(token, settings.jwt_public_key, algorithms=[settings.jwt_alg])
+            payload = jwt.decode(
+                token,
+                settings.jwt_public_key,
+                algorithms=[settings.jwt_alg],
+                options=_JWT_OPTIONS,
+            )
             return {"auth": "jwt", "sub": payload.get("sub"), "payload": payload}
-        except JWTError as e:
+        except PyJWTError as e:
             raise HTTPException(status_code=401, detail="Invalid JWT") from e
 
     raise HTTPException(status_code=401, detail="Unauthorized")
