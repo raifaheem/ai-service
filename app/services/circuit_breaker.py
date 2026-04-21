@@ -1,68 +1,179 @@
+"""Distributed circuit breaker with Redis-backed shared state.
+
+Each gunicorn worker / horizontal instance used to carry its own in-process
+state, so a 4-worker deployment needed three extra failure-storms before the
+contour opened uniformly. This module stores state in Redis, with a short
+local cache to keep the per-request read cost low.
+
+State transitions (same as a classic CB):
+  closed      → open         after `failure_threshold` failures
+  open        → half_open    after `recovery_timeout` seconds of quiet
+  half_open   → closed       on one successful call
+  half_open   → open         on one failure
+
+Redis format (one key per breaker name, prefixed by settings.redis_prefix):
+  {prefix}:cb:{name}  →  JSON {state, failure_count, last_failure_time}
+
+Design choices:
+- Fail-open on Redis errors. The breaker exists to protect upstream services;
+  it must not itself become a SPOF when Redis blips.
+- Local-cache TTL of 1s caps Redis round-trips at ~1/s/worker per breaker,
+  which is negligible next to the request rate limit.
+"""
+
+import asyncio
+import json
 import logging
 import time
+from typing import Literal
+
+from .redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
-_FAILURE_THRESHOLD = 3
-_RECOVERY_TIMEOUT = 60  # seconds
+State = Literal["closed", "open", "half_open"]
 
 
-class CircuitBreaker:
-    """Simple circuit breaker for external service calls.
-
-    States:
-    - closed: normal operation, requests pass through
-    - open: too many failures, requests are rejected immediately
-    - half_open: recovery window expired, allow one test request
-    """
-
+class DistributedCircuitBreaker:
     def __init__(
-        self, name: str, failure_threshold: int = _FAILURE_THRESHOLD, recovery_timeout: int = _RECOVERY_TIMEOUT
-    ):
+        self,
+        name: str,
+        failure_threshold: int = 3,
+        recovery_timeout: int = 60,
+        local_cache_ttl: float = 1.0,
+    ) -> None:
         self.name = name
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
-        self._failure_count = 0
-        self._last_failure_time: float = 0.0
-        self._state = "closed"
+        self._local_cache_ttl = local_cache_ttl
+
+        self._local_state: State = "closed"
+        self._local_failure_count = 0
+        self._local_last_failure: float = 0.0
+        self._last_sync: float = 0.0
+        self._lock = asyncio.Lock()
+
+    # --- Redis helpers ---
+
+    def _key(self) -> str:
+        from ..config import settings
+
+        return f"{settings.redis_prefix}:cb:{self.name}"
+
+    async def _sync_from_redis(self) -> None:
+        try:
+            raw = await get_redis().get(self._key())
+        except Exception:
+            # Redis itself is failing — keep whatever local state we have and
+            # let the request proceed; the breaker must not escalate outages.
+            logger.debug("CB %s: sync-from-redis failed, using local state", self.name)
+            self._last_sync = time.time()
+            return
+
+        if not raw:
+            self._local_state = "closed"
+            self._local_failure_count = 0
+            self._local_last_failure = 0.0
+            self._last_sync = time.time()
+            return
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            logger.warning("CB %s: corrupt state in Redis, resetting", self.name)
+            self._local_state = "closed"
+            self._local_failure_count = 0
+            self._last_sync = time.time()
+            return
+
+        self._local_state = data.get("state", "closed")
+        self._local_failure_count = int(data.get("failure_count", 0))
+        self._local_last_failure = float(data.get("last_failure_time", 0.0))
+
+        # Transition open → half_open once the recovery window has passed.
+        if self._local_state == "open" and time.time() - self._local_last_failure >= self.recovery_timeout:
+            self._local_state = "half_open"
+
+        self._last_sync = time.time()
+
+    async def _write_to_redis(self) -> None:
+        payload = json.dumps(
+            {
+                "state": self._local_state,
+                "failure_count": self._local_failure_count,
+                "last_failure_time": self._local_last_failure,
+            }
+        )
+        try:
+            # Keep state for 5 minutes of inactivity — cleaner than leaving stale
+            # 'open' state behind if the service reboots.
+            await get_redis().set(self._key(), payload, ex=300)
+        except Exception:
+            logger.debug("CB %s: write-to-redis failed", self.name)
+
+    async def _maybe_refresh(self) -> None:
+        if time.time() - self._last_sync <= self._local_cache_ttl:
+            return
+        async with self._lock:
+            if time.time() - self._last_sync > self._local_cache_ttl:
+                await self._sync_from_redis()
+
+    # --- Public API (async) ---
 
     @property
-    def state(self) -> str:
-        if self._state == "open" and time.monotonic() - self._last_failure_time >= self.recovery_timeout:
-            self._state = "half_open"
-        return self._state
+    async def state(self) -> State:
+        await self._maybe_refresh()
+        return self._local_state
 
     @property
-    def is_available(self) -> bool:
-        return self.state != "open"
+    async def is_available(self) -> bool:
+        return (await self.state) != "open"
 
-    def record_success(self) -> None:
-        if self._state == "half_open":
+    async def record_success(self) -> None:
+        # Only log the half_open -> closed transition — success in closed state is normal.
+        was_half_open = self._local_state == "half_open"
+        self._local_state = "closed"
+        self._local_failure_count = 0
+        self._local_last_failure = 0.0
+        self._last_sync = time.time()
+        await self._write_to_redis()
+        if was_half_open:
             logger.info("Circuit breaker '%s' recovered (half_open -> closed)", self.name)
-        self._failure_count = 0
-        self._state = "closed"
 
-    def record_failure(self) -> None:
-        self._failure_count += 1
-        self._last_failure_time = time.monotonic()
-        if self._state == "half_open" or self._failure_count >= self.failure_threshold:
-            if self._state != "open":
-                logger.warning(
-                    "Circuit breaker '%s' opened after %d failures",
-                    self.name,
-                    self._failure_count,
-                )
-            self._state = "open"
+    async def record_failure(self) -> None:
+        self._local_failure_count += 1
+        self._local_last_failure = time.time()
+        should_open = self._local_state == "half_open" or self._local_failure_count >= self.failure_threshold
+        previously = self._local_state
+        if should_open:
+            self._local_state = "open"
+        self._last_sync = time.time()
+        await self._write_to_redis()
+        if should_open and previously != "open":
+            logger.warning(
+                "Circuit breaker '%s' opened after %d failures",
+                self.name,
+                self._local_failure_count,
+            )
 
-    def reset(self) -> None:
-        self._failure_count = 0
-        self._state = "closed"
-        self._last_failure_time = 0.0
+    async def reset(self) -> None:
+        """Force-close the breaker and clear any persisted state."""
+        self._local_state = "closed"
+        self._local_failure_count = 0
+        self._local_last_failure = 0.0
+        self._last_sync = time.time()
+        try:
+            await get_redis().delete(self._key())
+        except Exception:
+            logger.debug("CB %s: reset delete failed", self.name)
 
 
-# Singleton circuit breakers for external services
-openai_breaker = CircuitBreaker("openai")
-qdrant_breaker = CircuitBreaker("qdrant")
+# Backwards-compatible alias so the external import path stays the same.
+CircuitBreaker = DistributedCircuitBreaker
+
+
+openai_breaker = DistributedCircuitBreaker("openai")
+qdrant_breaker = DistributedCircuitBreaker("qdrant")
 
 DEGRADED_MESSAGES = {
     "ru": "Сервис временно перегружен. Пожалуйста, попробуйте позже.",

@@ -2,11 +2,13 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+from .lifecycle import SHUTDOWN_TIMEOUT, active_streams, signal_shutdown
 from .logging_config import setup_logging
+from .security import auth_guard
 
 setup_logging(settings.log_level, settings.log_format)
 
@@ -20,20 +22,6 @@ from .services.redis_client import close_redis, get_redis, init_redis
 from .services.vector_client import close_qdrant, get_qdrant, init_qdrant
 from .services.vector_store import ensure_qdrant_collection
 
-# Track active streaming connections for graceful shutdown
-_active_streams: set[asyncio.Task] = set()
-_shutdown_event = asyncio.Event()
-_SHUTDOWN_TIMEOUT = 30
-
-
-def register_stream(task: asyncio.Task) -> None:
-    _active_streams.add(task)
-    task.add_done_callback(_active_streams.discard)
-
-
-def is_shutting_down() -> bool:
-    return _shutdown_event.is_set()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -43,12 +31,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        _shutdown_event.set()
-        if _active_streams:
-            logger.info(
-                "Waiting for %d active streams to finish (timeout=%ds)", len(_active_streams), _SHUTDOWN_TIMEOUT
-            )
-            _, pending = await asyncio.wait(_active_streams, timeout=_SHUTDOWN_TIMEOUT)
+        signal_shutdown()
+        streams = active_streams()
+        if streams:
+            logger.info("Waiting for %d active streams to finish (timeout=%ds)", len(streams), SHUTDOWN_TIMEOUT)
+            _, pending = await asyncio.wait(streams, timeout=SHUTDOWN_TIMEOUT)
             if pending:
                 logger.warning("Force-cancelling %d streams after shutdown timeout", len(pending))
                 for task in pending:
@@ -103,17 +90,30 @@ else:
     origins = [o.strip() for o in settings.allowed_origins.split(",")]
     allow_credentials = True
 
+if settings.app_env == "production":
+    allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+    allow_headers = ["Authorization", "Content-Type", "X-Service-Token", "X-User-Id", "X-Request-Id"]
+else:
+    allow_methods = ["*"]
+    allow_headers = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=allow_credentials,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=allow_methods,
+    allow_headers=allow_headers,
+    expose_headers=["X-Request-Id", "X-API-Version", "X-Service-Version"],
 )
 
 from .middleware.api_version import APIVersionMiddleware
+from .middleware.body_size import BodySizeLimitMiddleware
 from .middleware.request_logging import RequestLoggingMiddleware
 
+# 12 MB cap covers the articles endpoint's 10 MB uploads with headroom.
+_MAX_BODY_BYTES = 12 * 1024 * 1024
+
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=_MAX_BODY_BYTES)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(APIVersionMiddleware)
 
@@ -170,22 +170,30 @@ async def health():
     status = "ok"
 
     try:
-        await get_redis().ping()
+        await asyncio.wait_for(get_redis().ping(), timeout=2.0)
         checks["redis"] = "ok"
+    except TimeoutError:
+        checks["redis"] = "timeout"
+        status = "degraded"
     except Exception:
         checks["redis"] = "unavailable"
         status = "degraded"
 
     try:
-        await get_qdrant().get_collections()
+        await asyncio.wait_for(get_qdrant().get_collections(), timeout=2.0)
         checks["qdrant"] = "ok"
+    except TimeoutError:
+        checks["qdrant"] = "timeout"
+        status = "degraded"
     except Exception:
         checks["qdrant"] = "unavailable"
         status = "degraded"
 
-    checks["openai_circuit"] = openai_breaker.state
-    checks["qdrant_circuit"] = qdrant_breaker.state
-    if openai_breaker.state == "open":
+    openai_state = await openai_breaker.state
+    qdrant_state = await qdrant_breaker.state
+    checks["openai_circuit"] = openai_state
+    checks["qdrant_circuit"] = qdrant_state
+    if openai_state == "open":
         status = "degraded"
 
     return {
@@ -201,15 +209,19 @@ async def health():
     tags=["system"],
     summary="In-process metrics snapshot",
     description=(
-        "Unauthenticated metrics endpoint: request counts, intent distribution, OpenAI token usage, "
-        "RAG hit rate, 1h error rate, plus live Redis (active conversations) and Qdrant (collection size) "
-        "counters. Keep behind a private network or add auth before exposing externally."
+        "Authenticated metrics endpoint (`X-Service-Token` or JWT): request counts, intent distribution, "
+        "OpenAI token usage, RAG hit rate, 1h error rate, circuit-breaker states, plus live Redis "
+        "(active conversations) and Qdrant (collection size) counters."
     ),
+    dependencies=[Depends(auth_guard)],
 )
 async def get_metrics():
     from .metrics import metrics as app_metrics
+    from .services.circuit_breaker import openai_breaker, qdrant_breaker
 
     snapshot = app_metrics.snapshot()
+    snapshot["openai_circuit_state"] = await openai_breaker.state
+    snapshot["qdrant_circuit_state"] = await qdrant_breaker.state
 
     try:
         r = get_redis()

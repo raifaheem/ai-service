@@ -331,7 +331,7 @@ async def chat(
     metrics.record_rag_result(bool(rag_chunks))
 
     # Circuit breaker check
-    if not openai_breaker.is_available:
+    if not await openai_breaker.is_available:
         degraded = DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"])
         raise HTTPException(status_code=503, detail=degraded)
 
@@ -346,9 +346,9 @@ async def chat(
             temperature=intent.temperature,
             summary=summary,
         )
-        openai_breaker.record_success()
+        await openai_breaker.record_success()
     except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
-        openai_breaker.record_failure()
+        await openai_breaker.record_failure()
         status_code, message, _ = map_openai_error(e)
         raise HTTPException(status_code, message) from e
 
@@ -538,7 +538,7 @@ async def chat_stream(
     metrics.record_rag_result(bool(rag_chunks))
 
     # Circuit breaker check
-    if not openai_breaker.is_available:
+    if not await openai_breaker.is_available:
         degraded = DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"])
 
         async def degraded_generator():
@@ -599,7 +599,7 @@ async def chat_stream(
                     model_name = ev.get("model")
                     finish_reason = ev.get("finish_reason")
 
-            openai_breaker.record_success()
+            await openai_breaker.record_success()
             raw_answer = "".join(parts).strip()
             # Content safety filter
             raw_answer, _filters = check_response_safety(raw_answer, locale=locale)
@@ -637,7 +637,7 @@ async def chat_stream(
             )
 
         except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
-            openai_breaker.record_failure()
+            await openai_breaker.record_failure()
             _, message, code = map_openai_error(e)
             yield _sse(
                 "error",

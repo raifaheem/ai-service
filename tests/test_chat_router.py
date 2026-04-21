@@ -14,6 +14,30 @@ from app.routers.chat import (
 from app.schemas import ChatRequest, HistoryTurn, UserProfile
 from app.services.intent import IntentResult
 
+
+class _UnavailableBreaker:
+    """Stand-in for DistributedCircuitBreaker in the 'open' state.
+
+    The real breaker's is_available/state/record_* are async; MagicMock can't
+    auto-satisfy `await breaker.is_available` on its own, so tests use this
+    small fake to pin the circuit to "open" without spinning up Redis.
+    """
+
+    @property
+    async def is_available(self) -> bool:
+        return False
+
+    @property
+    async def state(self) -> str:
+        return "open"
+
+    async def record_success(self) -> None:
+        pass
+
+    async def record_failure(self) -> None:
+        pass
+
+
 # --------------- profile_to_text ---------------
 
 
@@ -300,10 +324,8 @@ class TestChatEndpoint:
             patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
             patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
-            patch("app.routers.chat.openai_breaker") as mock_breaker,
+            patch("app.routers.chat.openai_breaker", new=_UnavailableBreaker()),
         ):
-            mock_breaker.is_available = False
-
             from app.main import app
 
             transport = ASGITransport(app=app)
@@ -418,10 +440,8 @@ class TestChatStreamEndpoint:
             patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
             patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
-            patch("app.routers.chat.openai_breaker") as mock_breaker,
+            patch("app.routers.chat.openai_breaker", new=_UnavailableBreaker()),
         ):
-            mock_breaker.is_available = False
-
             from app.main import app
 
             transport = ASGITransport(app=app)
@@ -579,10 +599,8 @@ class TestSseRequestId:
             patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
             patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
-            patch("app.routers.chat.openai_breaker") as mock_breaker,
+            patch("app.routers.chat.openai_breaker", new=_UnavailableBreaker()),
         ):
-            mock_breaker.is_available = False
-
             from app.main import app
 
             transport = ASGITransport(app=app)
