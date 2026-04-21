@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from ..schemas_articles import ArticleAnalysisResponse, ArticleAnalyzeRequest
 from ..security import auth_guard
 from ..services.article_analyzer import analyze_article_text
-from ..services.article_parser import chunk_article_text
+from ..services.article_parser import chunk_article_with_headers
 from ..services.file_text_extract import (
     extract_text_from_file,
     is_supported_article_file,
@@ -31,23 +31,24 @@ async def _run_article_pipeline(
         raise HTTPException(status_code=400, detail="Article text is too short")
 
     final_source_id = source_id or f"article-{uuid.uuid4()}"
-    chunks = chunk_article_text(clean_text)
+    chunk_dicts = chunk_article_with_headers(clean_text)
 
     indexed_chunks = 0
     if index_chunks:
         vector_chunks = [
             {
-                "text": chunk,
+                "text": chunk["text"],
                 "source_id": final_source_id,
                 "title": title,
                 "language": language,
                 "metadata": {
                     "type": "medical_article",
                     "chunk_index": idx,
-                    "total_chunks": len(chunks),
+                    "total_chunks": len(chunk_dicts),
+                    "header": chunk.get("header"),
                 },
             }
-            for idx, chunk in enumerate(chunks, start=1)
+            for idx, chunk in enumerate(chunk_dicts, start=1)
         ]
         indexed_chunks = await upsert_text_chunks(vector_chunks)
 
