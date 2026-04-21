@@ -1,0 +1,63 @@
+name: Golden-set evals
+
+# Runs the golden-set evaluation harness against a newly-built container stack.
+#
+# Not tied to pull requests — the suite fires real OpenAI calls against
+# evals/cases.json (~50 cases) and costs money per run. Scheduled weekly, and
+# available on manual dispatch via the Actions tab.
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      cases_path:
+        description: "Path to the cases JSON (defaults to evals/cases.json)"
+        required: false
+        default: "evals/cases.json"
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install runner dependencies
+        run: pip install httpx==0.27.0
+
+      - name: Start docker-compose stack
+        env:
+          REDIS_PASSWORD: eval-redis-password
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SERVICE_TOKEN: eval-service-token
+        run: |
+          cp .env.example .env.docker
+          # Override the handful of values the stack needs at boot.
+          cat <<EOF >> .env.docker
+          OPENAI_API_KEY=${OPENAI_API_KEY}
+          SERVICE_TOKEN=${SERVICE_TOKEN}
+          REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+          QDRANT_URL=http://qdrant:6333
+          APP_ENV=dev
+          ENABLE_DEV_ROUTES=false
+          EOF
+          docker compose up -d --wait --wait-timeout 120
+
+      - name: Run evaluation suite
+        env:
+          EVAL_BASE_URL: http://localhost:8001
+          EVAL_SERVICE_TOKEN: eval-service-token
+        run: python evals/run_evals.py "${{ github.event.inputs.cases_path || 'evals/cases.json' }}"
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v
