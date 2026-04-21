@@ -6,12 +6,15 @@ All articles in this directory are **original adaptations** grounded in publicly
 
 | Source | License | Used for |
 |---|---|---|
-| **NIH MedlinePlus** (medlineplus.gov) | Public domain (U.S. federal government work) | Headache, back pain, fatigue, common cold, hay fever, flexibility |
+| **NIH MedlinePlus** (medlineplus.gov) | Public domain (U.S. federal government work) | Headache, back pain, fatigue, common cold, hay fever, flexibility, GERD, eczema, blood pressure, immunization, checkups |
 | **NIH Office of Dietary Supplements** (ods.od.nih.gov) | Public domain | Vitamin D, iron, B12, general supplements |
 | **NIH National Institute of Mental Health** (nimh.nih.gov) | Public domain | Stress, anxiety |
 | **NIH National Center for Complementary and Integrative Health** (nccih.nih.gov) | Public domain | Meditation and mindfulness |
-| **CDC** (cdc.gov) | Public domain (U.S. federal government work) | Sleep, common cold, pollen, water/hydration, physical activity, stress |
-| **WHO fact sheets** (who.int) | CC BY-NC-SA 3.0 IGO | Headache disorders, physical activity guidelines, anxiety — used as reference; all text in this corpus is adapted, not reproduced |
+| **NIH NIDDK** (niddk.nih.gov) | Public domain | Type 2 diabetes, GERD |
+| **NIH NIAMS** (niams.nih.gov) | Public domain | Atopic dermatitis (eczema) |
+| **CDC** (cdc.gov) | Public domain (U.S. federal government work) | Sleep, common cold, pollen, water/hydration, physical activity, stress, hypertension, diabetes prevention, adult immunization schedule, preventive care |
+| **USPSTF Recommendations** (uspreventiveservicestaskforce.org) | Public (U.S. federal task force recommendations) | Adult health screenings |
+| **WHO fact sheets** (who.int) | CC BY-NC-SA 3.0 IGO | Headache disorders, physical activity guidelines, anxiety, hypertension, diabetes, adult immunization — used as reference; all text in this corpus is adapted, not reproduced |
 | **NICE Guideline NG59 Low back pain and sciatica** (nice.org.uk) | Open Government Licence v3.0 | Back pain (UK clinical guidance) — used as reference |
 | **EFSA Scientific Opinions** (efsa.europa.eu) | EU public sector content | Dietary reference values for water, vitamin D |
 | **AASM Clinical Practice Guideline for Chronic Insomnia** | Referenced only for technique descriptions (CBT-I, sleep restriction); no copyrighted text used |
@@ -52,6 +55,31 @@ Every `source_id` below corresponds to one file in `articles/<lang>/` and one en
 | kk-meditation | kk | mental-health | Translated from en-meditation |
 | kk-seasonal-cold | kk | seasonal | Translated from ru-seasonal-cold |
 | kk-allergies | kk | seasonal | Translated from en-seasonal-allergies |
+| ru-hypertension | ru | cardiovascular | WHO Hypertension + NIH MedlinePlus + CDC |
+| ru-diabetes-prevention | ru | diabetes | CDC DPP + NIH NIDDK + WHO |
+| ru-heartburn | ru | digestive | NIH NIDDK + NIH MedlinePlus |
+| ru-eczema | ru | skin | NIH NIAMS + NIH MedlinePlus |
+| ru-adult-vaccinations | ru | vaccination | CDC Adult Immunization + WHO |
+| ru-adult-screenings | ru | screening | CDC Preventive Care + USPSTF |
+| en-hypertension | en | cardiovascular | WHO Hypertension + NIH MedlinePlus + CDC |
+| en-diabetes-prevention | en | diabetes | CDC DPP + NIH NIDDK + WHO |
+| en-heartburn | en | digestive | NIH NIDDK + NIH MedlinePlus |
+| en-eczema | en | skin | NIH NIAMS + NIH MedlinePlus |
+| en-adult-vaccinations | en | vaccination | CDC Adult Immunization + WHO |
+| en-adult-screenings | en | screening | CDC Preventive Care + USPSTF |
+
+### Pending human review (kk)
+
+These six topics were intentionally **not** machine-translated into Kazakh. Medical terminology (especially around hypertension, diabetes, and vaccination schedules) benefits from a native reviewer before landing in the RAG corpus — translating first and reviewing "eventually" has created hard-to-catch drift in previous rounds. They are listed under `pending_translations` in `manifest.json` so they don't get lost:
+
+- kk-hypertension (from ru-hypertension)
+- kk-diabetes-prevention (from ru-diabetes-prevention)
+- kk-heartburn (from ru-heartburn)
+- kk-eczema (from ru-eczema)
+- kk-adult-vaccinations (from ru-adult-vaccinations)
+- kk-adult-screenings (from ru-adult-screenings)
+
+When adding these, follow the same pattern as the first wave of `kk-*` articles: translate from the ru source, have a native kk speaker review for clinical terminology, tag `review_status: "machine_translated"` until the human pass is complete, flip to `review_status: "reviewed"` afterwards.
 
 ## Usage notes
 

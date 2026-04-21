@@ -401,6 +401,175 @@
         "license": "public domain — content adapted",
         "accessed": "2026-04-16"
       }
+    },
+    {
+      "source_id": "ru-hypertension",
+      "file": "articles/ru/hypertension.md",
+      "title": "Артериальная гипертония: как снизить давление и удержать результат",
+      "language": "ru",
+      "topic": "cardiovascular",
+      "attribution": {
+        "source": "WHO Hypertension fact sheet (Key facts, 2023); NIH MedlinePlus High Blood Pressure; CDC High Blood Pressure",
+        "source_url": "https://www.who.int/news-room/fact-sheets/detail/hypertension",
+        "license": "public domain (NIH/CDC) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted, not reproduced",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "ru-diabetes-prevention",
+      "file": "articles/ru/diabetes-prevention.md",
+      "title": "Диабет 2 типа: как снизить риск и что делать при преддиабете",
+      "language": "ru",
+      "topic": "diabetes",
+      "attribution": {
+        "source": "CDC National Diabetes Prevention Program; NIH NIDDK Type 2 Diabetes; WHO Diabetes fact sheet (2023)",
+        "source_url": "https://www.cdc.gov/diabetes-prevention/",
+        "license": "public domain (CDC/NIH) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "ru-heartburn",
+      "file": "articles/ru/heartburn.md",
+      "title": "Изжога и ГЭРБ: когда это образ жизни, а когда — болезнь",
+      "language": "ru",
+      "topic": "digestive",
+      "attribution": {
+        "source": "NIH NIDDK Acid Reflux (GER & GERD) in Adults; NIH MedlinePlus GERD; CDC digestive-health resources",
+        "source_url": "https://www.niddk.nih.gov/health-information/digestive-diseases/acid-reflux-ger-gerd-adults",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "ru-eczema",
+      "file": "articles/ru/eczema.md",
+      "title": "Экзема (атопический дерматит): как успокоить кожу и не допускать обострений",
+      "language": "ru",
+      "topic": "skin",
+      "attribution": {
+        "source": "NIH NIAMS Atopic Dermatitis; NIH MedlinePlus Eczema; CDC dermatology resources",
+        "source_url": "https://www.niams.nih.gov/health-topics/atopic-dermatitis",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "ru-adult-vaccinations",
+      "file": "articles/ru/adult-vaccinations.md",
+      "title": "Прививки для взрослых: что действительно нужно и когда",
+      "language": "ru",
+      "topic": "vaccination",
+      "attribution": {
+        "source": "CDC Adult Immunization Schedule; WHO immunization resources; NIH MedlinePlus Immunization",
+        "source_url": "https://www.cdc.gov/vaccines/schedules/hcp/imz/adult.html",
+        "license": "public domain (CDC/NIH) / WHO CC BY-NC-SA 3.0 IGO — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "ru-adult-screenings",
+      "file": "articles/ru/adult-screenings.md",
+      "title": "Скрининги взрослому: что сдавать и когда, по возрасту",
+      "language": "ru",
+      "topic": "screening",
+      "attribution": {
+        "source": "CDC Preventive Healthcare Recommendations; USPSTF Recommendations; NIH MedlinePlus Checkups and Health Screenings",
+        "source_url": "https://www.uspreventiveservicestaskforce.org/uspstf/topic_search_results?topic_status=P",
+        "license": "public domain (CDC/NIH) / USPSTF public recommendations — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "en-hypertension",
+      "file": "articles/en/hypertension.md",
+      "title": "High Blood Pressure: Lowering It and Keeping It Down",
+      "language": "en",
+      "topic": "cardiovascular",
+      "attribution": {
+        "source": "WHO Hypertension fact sheet (Key facts, 2023); NIH MedlinePlus High Blood Pressure; CDC High Blood Pressure",
+        "source_url": "https://www.who.int/news-room/fact-sheets/detail/hypertension",
+        "license": "public domain (NIH/CDC) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted, not reproduced",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "en-diabetes-prevention",
+      "file": "articles/en/diabetes-prevention.md",
+      "title": "Type 2 Diabetes: How to Lower Your Risk and What to Do About Prediabetes",
+      "language": "en",
+      "topic": "diabetes",
+      "attribution": {
+        "source": "CDC National Diabetes Prevention Program; NIH NIDDK Type 2 Diabetes; WHO Diabetes fact sheet (2023)",
+        "source_url": "https://www.cdc.gov/diabetes-prevention/",
+        "license": "public domain (CDC/NIH) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "en-heartburn",
+      "file": "articles/en/heartburn.md",
+      "title": "Heartburn and GERD: When It's Lifestyle, When It's a Condition",
+      "language": "en",
+      "topic": "digestive",
+      "attribution": {
+        "source": "NIH NIDDK Acid Reflux (GER & GERD) in Adults; NIH MedlinePlus GERD; CDC digestive-health resources",
+        "source_url": "https://www.niddk.nih.gov/health-information/digestive-diseases/acid-reflux-ger-gerd-adults",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "en-eczema",
+      "file": "articles/en/eczema.md",
+      "title": "Eczema (Atopic Dermatitis): How to Calm the Skin and Keep Flares Away",
+      "language": "en",
+      "topic": "skin",
+      "attribution": {
+        "source": "NIH NIAMS Atopic Dermatitis; NIH MedlinePlus Eczema; CDC dermatology resources",
+        "source_url": "https://www.niams.nih.gov/health-topics/atopic-dermatitis",
+        "license": "public domain — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "en-adult-vaccinations",
+      "file": "articles/en/adult-vaccinations.md",
+      "title": "Adult Vaccinations: What You Actually Need, and When",
+      "language": "en",
+      "topic": "vaccination",
+      "attribution": {
+        "source": "CDC Adult Immunization Schedule; WHO immunization resources; NIH MedlinePlus Immunization",
+        "source_url": "https://www.cdc.gov/vaccines/schedules/hcp/imz/adult.html",
+        "license": "public domain (CDC/NIH) / WHO CC BY-NC-SA 3.0 IGO — content adapted",
+        "accessed": "2026-04-21"
+      }
+    },
+    {
+      "source_id": "en-adult-screenings",
+      "file": "articles/en/adult-screenings.md",
+      "title": "Adult Health Screenings: What to Check, and When, by Age",
+      "language": "en",
+      "topic": "screening",
+      "attribution": {
+        "source": "CDC Preventive Healthcare Recommendations; USPSTF Recommendations; NIH MedlinePlus Checkups and Health Screenings",
+        "source_url": "https://www.uspreventiveservicestaskforce.org/uspstf/topic_search_results?topic_status=P",
+        "license": "public domain (CDC/NIH) / USPSTF public recommendations — content adapted",
+        "accessed": "2026-04-21"
+      }
     }
-  ]
+  ],
+  "pending_translations": {
+    "description": "Kazakh versions of these new topics are deliberately deferred. Each should be translated from the ru article and then put through human review by a native kk speaker before landing in the corpus (medical content — machine translation without review has bitten us on subtle terminology before). Track them here so they don't get lost.",
+    "target_language": "kk",
+    "source_for_review": "review_status: machine_translated",
+    "items": [
+      {"source_id": "kk-hypertension",         "translate_from": "ru-hypertension",         "topic": "cardiovascular"},
+      {"source_id": "kk-diabetes-prevention",  "translate_from": "ru-diabetes-prevention",  "topic": "diabetes"},
+      {"source_id": "kk-heartburn",            "translate_from": "ru-heartburn",            "topic": "digestive"},
+      {"source_id": "kk-eczema",               "translate_from": "ru-eczema",               "topic": "skin"},
+      {"source_id": "kk-adult-vaccinations",   "translate_from": "ru-adult-vaccinations",   "topic": "vaccination"},
+      {"source_id": "kk-adult-screenings",     "translate_from": "ru-adult-screenings",     "topic": "screening"}
+    ]
+  }
 }
