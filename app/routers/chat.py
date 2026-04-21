@@ -37,6 +37,7 @@ from ..services.summarizer import (
     should_summarize,
     summarize_conversation,
 )
+from ..tracing import tracer
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -317,7 +318,11 @@ async def chat(
         history = [{"role": t.role, "content": t.content} for t in turns]
 
     redis_client = _get_redis_or_none()
-    intent = await classify_intent(user_message, history=history, redis_client=redis_client, locale=locale)
+    with tracer.start_as_current_span("intent.classify") as span:
+        intent = await classify_intent(user_message, history=history, redis_client=redis_client, locale=locale)
+        span.set_attribute("intent.category", intent.category)
+        span.set_attribute("intent.confidence", float(intent.confidence))
+        span.set_attribute("intent.risk_level", intent.risk_level)
     metrics.record_intent(intent.category, risk_level=intent.risk_level)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
@@ -345,15 +350,20 @@ async def chat(
     rag_context: str = ""
     rag_chunks: list[dict] = []
     rag_score: float | None = None
-    try:
-        rag_context, rag_chunks, rag_score = await build_rag_context(
-            query=user_message,
-            limit=5,
-            language=locale,
-            redis_client=redis_client,
-        )
-    except Exception:
-        logger.warning("RAG unavailable for conversation %s, proceeding without context", conversation_id)
+    with tracer.start_as_current_span("rag.build") as span:
+        span.set_attribute("rag.locale", locale)
+        try:
+            rag_context, rag_chunks, rag_score = await build_rag_context(
+                query=user_message,
+                limit=5,
+                language=locale,
+                redis_client=redis_client,
+            )
+        except Exception:
+            logger.warning("RAG unavailable for conversation %s, proceeding without context", conversation_id)
+        span.set_attribute("rag.chunks", len(rag_chunks))
+        if rag_score is not None:
+            span.set_attribute("rag.top_score", float(rag_score))
     sources = compress_sources(rag_chunks)
     metrics.record_rag_result(bool(rag_chunks))
 
@@ -362,22 +372,25 @@ async def chat(
         degraded = DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"])
         raise HTTPException(status_code=503, detail=degraded)
 
-    try:
-        answer = await generate_health_answer(
-            user_message,
-            locale=locale,
-            profile_text=prof,
-            history=trimmed_history,
-            rag_context=rag_context,
-            addon_prompt=addon_prompt,
-            temperature=intent.temperature,
-            summary=summary,
-        )
-        await openai_breaker.record_success()
-    except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
-        await openai_breaker.record_failure()
-        status_code, message, _ = map_openai_error(e)
-        raise HTTPException(status_code, message) from e
+    with tracer.start_as_current_span("llm.generate") as span:
+        span.set_attribute("llm.locale", locale)
+        span.set_attribute("llm.temperature", float(intent.temperature))
+        try:
+            answer = await generate_health_answer(
+                user_message,
+                locale=locale,
+                profile_text=prof,
+                history=trimmed_history,
+                rag_context=rag_context,
+                addon_prompt=addon_prompt,
+                temperature=intent.temperature,
+                summary=summary,
+            )
+            await openai_breaker.record_success()
+        except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
+            await openai_breaker.record_failure()
+            status_code, message, _ = map_openai_error(e)
+            raise HTTPException(status_code, message) from e
 
     # Content safety filter
     raw_answer, applied_filters = check_response_safety(answer, locale=locale)

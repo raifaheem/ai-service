@@ -9,8 +9,12 @@ from .config import settings
 from .lifecycle import SHUTDOWN_TIMEOUT, active_streams, signal_shutdown
 from .logging_config import setup_logging
 from .security import auth_guard
+from .tracing import instrument_app, setup_tracing
 
 setup_logging(settings.log_level, settings.log_format)
+# Initialize tracing BEFORE the FastAPI instance is built, so the FastAPI
+# instrumentor attaches to a configured TracerProvider.
+_tracing_enabled = setup_tracing(settings.app_name, settings.app_version)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,11 @@ app = FastAPI(
     openapi_tags=_OPENAPI_TAGS,
     contact={"name": "Health AI Service", "url": "https://github.com/"},
 )
+
+# Auto-instrument FastAPI request/response, async-Redis client, and HTTPX (which
+# the OpenAI and Qdrant clients ride on). Safe to call when tracing is disabled.
+if _tracing_enabled:
+    instrument_app(app)
 
 if settings.allowed_origins == "*":
     origins = ["*"]

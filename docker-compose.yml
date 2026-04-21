@@ -47,6 +47,33 @@ services:
       timeout: 3s
       retries: 20
 
+  # OpenTelemetry Collector + Jaeger UI for local trace exploration.
+  # Activated via the "tracing" profile so dev defaults stay light:
+  #   docker compose --profile tracing up -d
+  # Then set OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 in .env.docker
+  # (or http://localhost:4317 for host-side processes) and view the trace tree
+  # at http://localhost:16686.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    profiles: ["tracing"]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./ops/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"  # OTLP gRPC
+    depends_on:
+      - jaeger
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: ["tracing"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"  # UI
+    restart: unless-stopped
+
   # One-shot seeder for the RAG knowledge base.
   # Runs independently of the `ai` service and does NOT require ENABLE_DEV_ROUTES,
   # so it's safe in prod overlays. Invoke with:
