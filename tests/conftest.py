@@ -5,49 +5,204 @@ os.environ["SERVICE_TOKEN"] = "test-token"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["QDRANT_URL"] = "http://localhost:6333"
 
-import json
+import time
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
-from app.schemas import ChatRequest, UserProfile
+from app.schemas import UserProfile
+
+# --------------- Stateful mock Redis ---------------
 
 
-# --------------- Mock Redis ---------------
+class _FakeRedis:
+    """Stateful in-memory stand-in for async Redis used in tests.
+
+    Models the handful of behaviours tests actually depend on:
+    - strings (GET/SET/DELETE) with TTL,
+    - lists (RPUSH/LTRIM/LRANGE),
+    - INCR/EXPIRE,
+    - KEYS glob (trivial prefix+suffix),
+    - TTL semantics: -2 for missing keys, -1 for no-expiry, >=0 otherwise,
+    - pipelines that accumulate and replay commands atomically.
+    """
+
+    def __init__(self) -> None:
+        self._store: dict[str, object] = {}
+        self._expiries: dict[str, float] = {}
+
+    def _evict_if_expired(self, key: str) -> None:
+        deadline = self._expiries.get(key)
+        if deadline is not None and deadline <= time.time():
+            self._store.pop(key, None)
+            self._expiries.pop(key, None)
+
+    async def ping(self) -> bool:
+        return True
+
+    async def get(self, key: str):
+        self._evict_if_expired(key)
+        val = self._store.get(key)
+        if isinstance(val, list):
+            return None
+        return val
+
+    async def set(self, key: str, value, ex: int | None = None, nx: bool = False):
+        self._evict_if_expired(key)
+        if nx and key in self._store:
+            return None
+        self._store[key] = value
+        if ex is not None:
+            self._expiries[key] = time.time() + ex
+        else:
+            self._expiries.pop(key, None)
+        return True
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            if key in self._store:
+                removed += 1
+                self._store.pop(key, None)
+                self._expiries.pop(key, None)
+        return removed
+
+    async def keys(self, pattern: str) -> list[str]:
+        import fnmatch
+
+        return [k for k in self._store if fnmatch.fnmatchcase(k, pattern)]
+
+    async def lrange(self, key: str, start: int, end: int) -> list:
+        self._evict_if_expired(key)
+        items = self._store.get(key)
+        if not isinstance(items, list):
+            return []
+        if end == -1:
+            return list(items[start:])
+        return list(items[start : end + 1])
+
+    async def rpush(self, key: str, *values) -> int:
+        self._evict_if_expired(key)
+        lst = self._store.get(key)
+        if not isinstance(lst, list):
+            lst = []
+            self._store[key] = lst
+        lst.extend(values)
+        return len(lst)
+
+    async def ltrim(self, key: str, start: int, end: int) -> bool:
+        self._evict_if_expired(key)
+        lst = self._store.get(key)
+        if not isinstance(lst, list):
+            return True
+        if end == -1:
+            self._store[key] = lst[start:]
+        else:
+            self._store[key] = lst[start : end + 1]
+        return True
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        if key not in self._store:
+            return False
+        self._expiries[key] = time.time() + ttl
+        return True
+
+    async def incr(self, key: str, amount: int = 1) -> int:
+        self._evict_if_expired(key)
+        current = int(self._store.get(key) or 0)
+        current += amount
+        self._store[key] = current
+        return current
+
+    async def ttl(self, key: str) -> int:
+        self._evict_if_expired(key)
+        if key not in self._store:
+            return -2
+        deadline = self._expiries.get(key)
+        if deadline is None:
+            return -1
+        return max(0, int(deadline - time.time()))
+
+    # --- sorted sets (ZSET) — used by sliding-window rate limiting ---
+
+    def _zset(self, key: str) -> dict[str, float]:
+        self._evict_if_expired(key)
+        store = self._store.get(key)
+        if not isinstance(store, dict):
+            store = {}
+            self._store[key] = store
+        return store
+
+    async def zadd(self, key: str, mapping: dict[str, float]) -> int:
+        zset = self._zset(key)
+        added = 0
+        for member, score in mapping.items():
+            if member not in zset:
+                added += 1
+            zset[member] = float(score)
+        return added
+
+    async def zcard(self, key: str) -> int:
+        self._evict_if_expired(key)
+        zset = self._store.get(key)
+        if not isinstance(zset, dict):
+            return 0
+        return len(zset)
+
+    async def zremrangebyscore(self, key: str, min_score: float, max_score: float) -> int:
+        self._evict_if_expired(key)
+        zset = self._store.get(key)
+        if not isinstance(zset, dict):
+            return 0
+        to_drop = [m for m, s in zset.items() if min_score <= s <= max_score]
+        for m in to_drop:
+            zset.pop(m, None)
+        return len(to_drop)
+
+    def pipeline(self, transaction: bool = True) -> "_FakePipeline":
+        return _FakePipeline(self)
+
+
+class _FakePipeline:
+    def __init__(self, redis: _FakeRedis) -> None:
+        self._redis = redis
+        self._ops: list[tuple[str, tuple, dict]] = []
+
+    async def __aenter__(self) -> "_FakePipeline":
+        return self
+
+    async def __aexit__(self, *_) -> bool:
+        return False
+
+    def _queue(self, name: str):
+        def _op(*args, **kwargs):
+            self._ops.append((name, args, kwargs))
+            return self
+
+        return _op
+
+    def __getattr__(self, name: str):
+        return self._queue(name)
+
+    async def execute(self) -> list:
+        results: list = []
+        for name, args, kwargs in self._ops:
+            fn = getattr(self._redis, name)
+            results.append(await fn(*args, **kwargs))
+        self._ops.clear()
+        return results
+
 
 @pytest.fixture
 def mock_redis():
-    """A mock Redis client with sensible defaults."""
-    r = AsyncMock()
-    r.ping = AsyncMock(return_value=True)
-    r.get = AsyncMock(return_value=None)
-    r.set = AsyncMock(return_value=True)
-    r.delete = AsyncMock(return_value=1)
-    r.keys = AsyncMock(return_value=[])
-    r.lrange = AsyncMock(return_value=[])
-    r.rpush = AsyncMock(return_value=1)
-    r.ltrim = AsyncMock()
-    r.expire = AsyncMock()
-    r.ttl = AsyncMock(return_value=3600)
-    r.incr = AsyncMock(return_value=1)
-
-    pipe = AsyncMock()
-    pipe.incr = MagicMock()
-    pipe.expire = MagicMock()
-    pipe.rpush = MagicMock()
-    pipe.ltrim = MagicMock()
-    pipe.set = MagicMock()
-    pipe.execute = AsyncMock(return_value=[1, True])
-    pipe.__aenter__ = AsyncMock(return_value=pipe)
-    pipe.__aexit__ = AsyncMock(return_value=False)
-    r.pipeline = MagicMock(return_value=pipe)
-    return r
+    """Stateful async Redis stand-in. Each test gets a fresh instance."""
+    return _FakeRedis()
 
 
 # --------------- Mock Qdrant ---------------
+
 
 @pytest.fixture
 def mock_qdrant():
@@ -63,6 +218,7 @@ def mock_qdrant():
 
 
 # --------------- Mock OpenAI ---------------
+
 
 @dataclass
 class _MockUsage:
@@ -109,6 +265,7 @@ def mock_openai_client():
 
 # --------------- Auth helpers ---------------
 
+
 @pytest.fixture
 def service_auth_headers():
     """Headers for service token auth."""
@@ -129,15 +286,19 @@ def sample_profile():
 
 # --------------- Patched app client ---------------
 
+
 @pytest.fixture
 def patched_app(mock_redis, mock_qdrant):
     """Patch Redis and Qdrant before importing the app, return the FastAPI instance."""
-    with patch("app.services.redis_client._redis", mock_redis), \
-         patch("app.services.redis_client.get_redis", return_value=mock_redis), \
-         patch("app.services.vector_client._qdrant", mock_qdrant), \
-         patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
-         patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock):
+    with (
+        patch("app.services.redis_client._redis", mock_redis),
+        patch("app.services.redis_client.get_redis", return_value=mock_redis),
+        patch("app.services.vector_client._qdrant", mock_qdrant),
+        patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
+        patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
+    ):
         from app.main import app
+
         yield app
 
 
