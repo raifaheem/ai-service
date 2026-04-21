@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import APIConnectionError, APIStatusError, AuthenticationError, RateLimitError
 
-from ..context import set_conversation_id, set_user_id
+from ..context import get_request_id, set_conversation_id, set_user_id
 from ..lifecycle import is_shutting_down, register_stream
 from ..metrics import metrics
 from ..schemas import ChatIntent, ChatRequest, ChatResponse, ChatSource
@@ -666,7 +666,11 @@ async def chat_stream(
 
 
 def _sse(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    # Inject request_id into every SSE payload so support tickets can cite a single
+    # id that matches the response header and application-log entries. An explicit
+    # request_id in `data` wins (kept for future overrides).
+    payload = {"request_id": get_request_id(), **data}
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def request_history_to_messages(req: ChatRequest) -> list[dict]:
