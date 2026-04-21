@@ -147,7 +147,28 @@ async def classify_intent(
         cache_key = _build_cache_key(message, history_tail, locale)
         cached = await _get_cached(redis_client, cache_key)
         if cached:
+            metrics.record_intent_path("cache")
             return cached
+
+    # Embedding-based fast path (C.5) — only trusted for safe categories.
+    # emergency / symptom_check / mental_health / general_health still go
+    # through the LLM because getting those wrong has cost.
+    from .intent_embeddings import fast_classify_intent  # local import breaks circular
+
+    fast_result = await fast_classify_intent(message)
+    if fast_result is not None:
+        category, confidence, risk_level = fast_result
+        result = IntentResult(
+            category=category,
+            confidence=confidence,
+            requires_followup=False,
+            detected_entities={},
+            risk_level=risk_level,
+        )
+        if redis_client:
+            await _set_cached(redis_client, cache_key, result)
+        metrics.record_intent_path("fast")
+        return result
 
     messages: list[Any] = [{"role": "system", "content": CLASSIFY_SYSTEM_PROMPT}]
     if history_tail:
@@ -206,4 +227,5 @@ async def classify_intent(
     if redis_client:
         await _set_cached(redis_client, cache_key, result)
 
+    metrics.record_intent_path("llm")
     return result

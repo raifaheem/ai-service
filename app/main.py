@@ -18,6 +18,7 @@ from .routers.articles import router as articles_router
 from .routers.chat import router as chat_router
 from .routers.conversations import router as conv_router
 from .routers.rag import router as rag_router
+from .services.intent_embeddings import initialize_exemplar_embeddings
 from .services.redis_client import close_redis, get_redis, init_redis
 from .services.vector_client import close_qdrant, get_qdrant, init_qdrant
 from .services.vector_store import ensure_qdrant_collection
@@ -28,6 +29,13 @@ async def lifespan(app: FastAPI):
     await init_redis()
     await init_qdrant()
     await ensure_qdrant_collection()
+    # Build the intent-classifier fast-path index. Non-fatal: if embedding the
+    # exemplars fails (e.g. OpenAI is unreachable at boot) classify_intent
+    # simply skips the fast path on every call until the next restart.
+    try:
+        await initialize_exemplar_embeddings()
+    except Exception:
+        logger.exception("Failed to initialize intent exemplar embeddings; fast path disabled")
     try:
         yield
     finally:

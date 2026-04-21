@@ -68,6 +68,12 @@ RAG_REQUESTS = Counter(
     ["hit"],  # "true" | "false"
 )
 
+INTENT_PATH = Counter(
+    "healthai_intent_path_total",
+    "Which code path answered an intent classification.",
+    ["path"],  # "fast" | "cache" | "llm"
+)
+
 CIRCUIT_BREAKER_STATE = Gauge(
     "healthai_circuit_breaker_state",
     "Circuit breaker state: 0=closed, 1=half_open, 2=open.",
@@ -119,6 +125,10 @@ class _MetricsFacade:
 
     def record_rag_result(self, hit: bool) -> None:
         RAG_REQUESTS.labels(hit="true" if hit else "false").inc()
+
+    def record_intent_path(self, path: str) -> None:
+        """Which intent classifier path answered: fast (embeddings), cache (Redis), llm (OpenAI)."""
+        INTENT_PATH.labels(path=path).inc()
 
     def record_error(self) -> None:
         # Errors are already captured by record_request's 4xx/5xx buckets;
