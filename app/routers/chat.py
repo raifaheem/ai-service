@@ -262,6 +262,21 @@ async def chat(
     prof = profile_to_text(req, locale=locale)
     disclaimer = get_disclaimer(locale)
 
+    # Idempotency: short-circuit to a cached response for retries that carry the
+    # same key. Scoped per user_id so two users choosing the same key don't collide.
+    if req.idempotency_key:
+        try:
+            cached = await memory.get_idempotent_response(user_id, req.idempotency_key)
+        except Exception:
+            cached = None
+        if cached:
+            logger.info(
+                "Idempotency hit for user=%s key=%s; returning cached response",
+                user_id,
+                req.idempotency_key,
+            )
+            return ChatResponse(**cached)
+
     rate_limit_id = f"user:{user_id}"
     await enforce_rate_limit(rate_limit_id)
 
@@ -393,7 +408,7 @@ async def chat(
         applied_filters=list(applied_filters),
     )
 
-    return ChatResponse(
+    response = ChatResponse(
         answer=answer_to_user,
         disclaimer=disclaimer,
         conversation_id=conversation_id,
@@ -402,6 +417,15 @@ async def chat(
         sources=[ChatSource(**item) for item in sources] or None,
         intent=ChatIntent(category=intent.category, risk_level=intent.risk_level, confidence=intent.confidence),
     )
+
+    # Cache for idempotent retries (10-minute TTL). Non-fatal on Redis errors.
+    if req.idempotency_key:
+        try:
+            await memory.set_idempotent_response(user_id, req.idempotency_key, response.model_dump(mode="json"))
+        except Exception:
+            logger.debug("Failed to cache idempotent response for %s", req.idempotency_key)
+
+    return response
 
 
 _CHAT_STREAM_DESCRIPTION = """\

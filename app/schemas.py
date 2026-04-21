@@ -131,6 +131,16 @@ class ChatRequest(BaseModel):
         default=None,
         description="Free-form client metadata. Max 5 KB when serialized to JSON.",
     )
+    idempotency_key: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Optional client-supplied idempotency key, scoped per user. If a previous request with the "
+            "same (user_id, idempotency_key) was answered in the last 10 minutes, the cached response is "
+            "returned instead of running the pipeline again. Applies only to POST /v1/chat (not the SSE "
+            "streaming endpoint). Use a fresh UUID per logical user action."
+        ),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
