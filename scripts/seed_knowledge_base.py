@@ -1,13 +1,19 @@
-"""Bulk-seed the RAG knowledge base from a declarative manifest.
+"""[DEPRECATED — prefer scripts/seed_direct.py]
+
+Bulk-seed the RAG knowledge base from a declarative manifest via HTTP.
+
+This script pushes every manifest entry through `POST /v1/articles/analyze`,
+which requires `ENABLE_DEV_ROUTES=true` — but that flag is forbidden in
+production by app/config.py::_validate_prod_safety, so this script can't be
+used against prod. Use scripts/seed_direct.py instead (or the `seed` docker
+compose profile, which runs seed_direct.py in the internal network).
+
+Kept here for legacy local workflows that already shell out to it.
 
 Example:
     python scripts/seed_knowledge_base.py \\
         --manifest data/knowledge_base/manifest.json \\
         --base-url http://localhost:8001
-
-The manifest lists articles with their source_id, language, title, attribution,
-and the relative path to the markdown/txt body. Each entry is pushed through
-`POST /v1/articles/analyze`, which chunks, analyzes, and indexes it in one call.
 
 Idempotent: when `--overwrite` is set (default), any existing chunks with the
 same `source_id` are removed from Qdrant before the article is re-inserted.

@@ -47,6 +47,28 @@ services:
       timeout: 3s
       retries: 20
 
+  # One-shot seeder for the RAG knowledge base.
+  # Runs independently of the `ai` service and does NOT require ENABLE_DEV_ROUTES,
+  # so it's safe in prod overlays. Invoke with:
+  #   docker compose --profile seed run --rm seed
+  seed:
+    build: .
+    profiles: ["seed"]
+    env_file:
+      - .env.docker
+    environment:
+      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+      QDRANT_URL: "http://qdrant:6333"
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    # Host knowledge base read-only so the seed can read the manifest + articles.
+    volumes:
+      - ./data/knowledge_base:/app/data/knowledge_base:ro
+    command: python scripts/seed_direct.py --manifest data/knowledge_base/manifest.json
+
 volumes:
   redis-health-ai-data:
   qdrant-health-ai-data:
