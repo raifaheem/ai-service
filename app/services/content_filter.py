@@ -1,3 +1,16 @@
+"""Post-LLM content safety: flag dosage recommendations and append a footer.
+
+Previous versions rewrote the response in place — inserting parenthetical warnings
+mid-sentence and "softener" prefixes before diagnoses. Those produced grammatically
+broken output ("take 500mg (consult your doctor for proper dosage) ibuprofen twice
+daily" / "Возможно, речь идёт о у вас низкий уровень витамина D") and the softener
+path actively papered over problems the system prompt is supposed to prevent anyway.
+
+This module now does one thing: detect dosage mentions and append a single locale-
+aware footer to the response. Diagnosis softening is gone — the system prompt is
+the right place for that rule.
+"""
+
 import logging
 import re
 
@@ -23,53 +36,34 @@ _DOSAGE_PATTERNS: list[re.Pattern] = [
     ),
 ]
 
-# Patterns for definitive diagnoses stated as fact
-_DIAGNOSIS_PATTERNS: list[re.Pattern] = [
-    re.compile(
-        r"(?:you\s+have|у\s+вас|сізде|your\s+diagnosis\s+is|диагноз\s*[:\-—]\s*)\s*[A-Za-zА-Яа-яЁёІіҚқҒғҮүҰұӘәӨөҺһҢңА-Яа-я]+",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?:this\s+is\s+(?:definitely|clearly|obviously)|это\s+(?:точно|однозначно|определённо))\s+\w+",
-        re.IGNORECASE,
-    ),
-]
-
-_DOSAGE_REPLACEMENTS = {
-    "ru": " (уточните дозировку у вашего врача)",
-    "en": " (consult your doctor for proper dosage)",
-    "kk": " (дәрігеріңізбен дозасын нақтылаңыз)",
-}
-
-_DIAGNOSIS_SOFTENERS = {
-    "ru": "Возможно, речь идёт о",
-    "en": "This may suggest",
-    "kk": "Бұл көрсетуі мүмкін",
+_DOSAGE_FOOTER = {
+    "ru": "⚠️ Перед приёмом любых препаратов уточните дозировку у вашего врача или фармацевта.",
+    "en": "⚠️ Before taking any medication, consult your doctor or pharmacist for proper dosage.",
+    "kk": "⚠️ Кез келген дәрі қабылдар алдында дозаны дәрігер немесе фармацевтпен нақтылаңыз.",
 }
 
 
 def check_response_safety(response: str, locale: str = "ru") -> tuple[str, list[str]]:
-    """Check LLM response for medical safety issues and apply filters.
+    """Check LLM response for medical safety issues and append a footer if needed.
 
     Returns (filtered_response, list_of_applied_filters).
+
+    The response body is never modified in place — the footer is appended exactly
+    once when any dosage pattern matches anywhere in the text.
     """
+    if not response:
+        return response, []
+
     applied_filters: list[str] = []
-    filtered = response
-
-    # 1. Check for specific drug dosages
-    dosage_note = _DOSAGE_REPLACEMENTS.get(locale, _DOSAGE_REPLACEMENTS["ru"])
     for pattern in _DOSAGE_PATTERNS:
-        if pattern.search(filtered):
-            filtered = pattern.sub(lambda m: m.group(0) + dosage_note, filtered, count=0)
-            if "dosage_warning" not in applied_filters:
-                applied_filters.append("dosage_warning")
-
-    # 2. Soften definitive diagnoses
-    for pattern in _DIAGNOSIS_PATTERNS:
-        match = pattern.search(filtered)
-        if match:
-            applied_filters.append("diagnosis_softened")
+        if pattern.search(response):
+            applied_filters.append("dosage_warning")
             break
+
+    filtered = response
+    if "dosage_warning" in applied_filters:
+        footer = _DOSAGE_FOOTER.get(locale, _DOSAGE_FOOTER["ru"])
+        filtered = f"{response.rstrip()}\n\n{footer}"
 
     if applied_filters:
         logger.info("Content filters applied: %s", applied_filters)
