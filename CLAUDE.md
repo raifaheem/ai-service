@@ -85,9 +85,22 @@ Curated Markdown under [data/knowledge_base/](data/knowledge_base/) + [manifest.
 
 - Multi-stage Dockerfile; runtime CMD is `gunicorn -k uvicorn.workers.UvicornWorker -w 4 --graceful-timeout 30`.
 - Prod = **overlay**: `docker-compose.yml` + `docker-compose.prod.yml` (not the prod file alone). `.env.production` is deploy-host only (gitignored).
+- Resource budget in prod overlay: redis 0.5 CPU / 512M, qdrant 1.5 CPU / 2G, ai 2.0 CPU / 1G. Revisit when the KB grows past ~100k chunks (qdrant memory is the first thing to run out).
 - `/health` → `ok|degraded` (Redis + Qdrant + circuit state); wire to liveness probes.
 - `/metrics` is unauthenticated — keep on private network.
 - Release: push `vX.Y.Z` tag → [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds + pushes to GHCR. CI = [.github/workflows/ci.yml](.github/workflows/ci.yml) (test/lint/typecheck/security).
+
+### Qdrant backup
+
+Collection state is the only non-regenerable asset — Redis holds ephemeral history that a single client reset can recover, but Qdrant holds the embedded knowledge base. Snapshot via the `backup` profile:
+
+```bash
+docker compose --profile backup run --rm qdrant-backup
+```
+
+That runs [scripts/qdrant_backup.py](scripts/qdrant_backup.py) which POSTs to Qdrant's snapshot API, downloads the new snapshot file to `./backups/qdrant/` (mounted read-write), and prunes everything older than the 7 most recent. Wire to host cron daily. Off-host transport (S3 / rclone / borg) is intentionally out of scope — point your existing backup runner at `./backups/qdrant/`.
+
+To restore: `POST /collections/{collection}/snapshots/upload` with the snapshot file, or use `recover_snapshot_from_uri` from the qdrant-client Python API.
 
 ## Tools
 

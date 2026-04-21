@@ -96,6 +96,25 @@ services:
       - ./data/knowledge_base:/app/data/knowledge_base:ro
     command: python scripts/seed_direct.py --manifest data/knowledge_base/manifest.json
 
+  # One-shot Qdrant snapshot + retention. Snapshots are written into the
+  # `qdrant-health-ai-data` volume by Qdrant itself; the `--download-to`
+  # mount below gives the host a copy for off-host transport (rclone/S3/etc).
+  # Wire to host cron daily:
+  #   docker compose --profile backup run --rm qdrant-backup
+  qdrant-backup:
+    build: .
+    profiles: ["backup"]
+    env_file:
+      - .env.docker
+    environment:
+      QDRANT_URL: "http://qdrant:6333"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ./backups/qdrant:/backup/qdrant
+    command: python scripts/qdrant_backup.py --download-to /backup/qdrant --keep-last 7
+
 volumes:
   redis-health-ai-data:
   qdrant-health-ai-data:

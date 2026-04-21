@@ -2,10 +2,17 @@ services:
   redis:
     ports: []
     restart: always
+    # CPU/memory caps keep a runaway connection storm or growing AOF from
+    # evicting other services on a shared host. Reservations are soft
+    # guarantees for scheduler placement on multi-container hosts.
     deploy:
       resources:
         limits:
+          cpus: "0.5"
           memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
     logging:
       driver: json-file
       options:
@@ -15,10 +22,17 @@ services:
   qdrant:
     ports: []
     restart: always
+    # Qdrant holds the HNSW index in memory; 2G covers the current corpus
+    # (~30 articles * 3 locales, ~1000 chunks) with headroom. Revisit when
+    # the KB grows past ~100k chunks — the index will need more RAM.
     deploy:
       resources:
         limits:
+          cpus: "1.5"
           memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
     logging:
       driver: json-file
       options:
@@ -32,11 +46,20 @@ services:
   ai:
     env_file:
       - .env.production
+    environment:
+      GUNICORN_WORKERS: 2
     restart: always
+    # 2 gunicorn workers * (baseline ~200M RSS + spikes during LLM streaming)
+    # fits in 1G with room for the intent-embedding cache. If workers are
+    # bumped, raise the memory limit proportionally.
     deploy:
       resources:
         limits:
+          cpus: "2.0"
           memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
     logging:
       driver: json-file
       options:
@@ -47,3 +70,41 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # Tracing-profile services: only realized when `docker compose --profile
+  # tracing up` is invoked with this overlay. Conservative caps so an
+  # accidentally-enabled profile in prod can't destabilize the host.
+  otel-collector:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  jaeger:
+    ports: []
+    restart: always
+    # All-in-one stores spans in memory; cap it tightly so an unbounded
+    # trace volume can't push qdrant/ai off the host.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
