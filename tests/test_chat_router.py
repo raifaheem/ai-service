@@ -6,11 +6,11 @@ from httpx import ASGITransport, AsyncClient
 from app.routers.chat import (
     OFF_TOPIC_MESSAGES,
     _resolve_addon_prompt,
-    _sse,
     map_openai_error,
     profile_to_text,
     request_history_to_messages,
 )
+from app.services.chat_stream import sse as _sse
 from app.schemas import ChatRequest, HistoryTurn, UserProfile
 from app.services.intent import IntentResult
 
@@ -74,11 +74,14 @@ class TestRequestHistoryToMessages:
         assert messages[0] == {"role": "user", "content": "Hello"}
         assert messages[1] == {"role": "assistant", "content": "Hi there"}
 
-    def test_limits_to_8_turns(self):
+    def test_passes_full_history_through(self):
+        """M11: no slicing — the summarizer downstream decides what to keep
+        based on `SUMMARIZE_THRESHOLD`. Both Redis-fetched and client-supplied
+        history converge on the same logic."""
         turns = [HistoryTurn(role="user", content=f"msg {i}") for i in range(12)]
         req = ChatRequest(message="test", history=turns)
         messages = request_history_to_messages(req)
-        assert len(messages) == 8
+        assert len(messages) == 12
 
     def test_strips_empty_content(self):
         req = ChatRequest(
@@ -125,6 +128,42 @@ class TestMapOpenaiError:
         status, msg, code = map_openai_error(ValueError("unknown"))
         assert status == 500
         assert code == "internal_error"
+
+    # --- S2: user-facing messages must not leak upstream details ---
+
+    def test_auth_error_message_does_not_leak_provider_or_config(self):
+        from openai import AuthenticationError
+
+        e = AuthenticationError.__new__(AuthenticationError)
+        _, msg, _ = map_openai_error(e)
+        for forbidden in ("OpenAI", "OPENAI_API_KEY", "auth failed", "API key", "api_key"):
+            assert forbidden.lower() not in msg.lower(), f"map_openai_error leaks '{forbidden}' in: {msg}"
+
+    def test_rate_limit_error_message_does_not_leak_provider(self):
+        from openai import RateLimitError
+
+        e = RateLimitError.__new__(RateLimitError)
+        _, msg, _ = map_openai_error(e)
+        assert "OpenAI" not in msg
+        assert "quota" not in msg.lower()
+        assert "billing" not in msg.lower()
+
+    def test_api_status_error_does_not_leak_status_code(self):
+        from openai import APIStatusError
+
+        e = APIStatusError.__new__(APIStatusError)
+        e.status_code = 418
+        _, msg, _ = map_openai_error(e)
+        assert "418" not in msg
+        assert "OpenAI" not in msg
+
+    def test_connection_error_message_is_generic(self):
+        from openai import APIConnectionError
+
+        e = APIConnectionError.__new__(APIConnectionError)
+        _, msg, _ = map_openai_error(e)
+        assert "OpenAI" not in msg
+        assert "connection error" not in msg.lower()
 
 
 # --------------- _resolve_addon_prompt ---------------
@@ -211,6 +250,51 @@ class TestChatEndpoint:
         assert "answer" in data
         assert "disclaimer" in data
         assert "conversation_id" in data
+
+    async def test_chat_disclaimer_appended_exactly_once(self, mock_redis, mock_qdrant):
+        """Regression: the model used to be told (system prompt step 5) to end with its
+        own disclaimer ("...носят информационный характер..."), and chat.py *also* appends
+        DISCLAIMERS[locale] when its substring isn't found. The two phrasings differed,
+        so the substring guard was always false and users saw both. We removed step 5 from
+        the prompt and rely on the post-process append as the single source. This test
+        pins that contract: when the model returns text without any disclaimer, the
+        canonical one is appended exactly once and the LLM-style phrase is absent."""
+        from app.prompts import DISCLAIMERS
+
+        mock_intent = IntentResult(
+            category="symptom_check", confidence=0.9, requires_followup=False, detected_entities={}, risk_level="low"
+        )
+
+        with (
+            patch("app.services.redis_client._redis", mock_redis),
+            patch("app.services.redis_client.get_redis", return_value=mock_redis),
+            patch("app.services.vector_client._qdrant", mock_qdrant),
+            patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
+            patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
+            patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
+            patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
+            patch(
+                "app.routers.chat.generate_health_answer",
+                new_callable=AsyncMock,
+                return_value="Совет: пейте воду и отдохните.",
+            ),
+            patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
+        ):
+            from app.main import app
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat",
+                    json={"message": "Болит голова", "locale": "ru"},
+                    headers={"X-Service-Token": "test-token", "X-User-Id": "user-1"},
+                )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["answer"].count(DISCLAIMERS["ru"]) == 1
+        assert "носят информационный характер" not in data["answer"]
+        assert data["disclaimer"] == DISCLAIMERS["ru"]
 
     async def test_chat_injection_blocked(self, mock_redis, mock_qdrant):
         with (
@@ -478,7 +562,7 @@ class TestChatStreamEndpoint:
             patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
             patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
             patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
-            patch("app.routers.chat.stream_health_answer", side_effect=mock_stream),
+            patch("app.services.chat_stream.stream_health_answer", side_effect=mock_stream),
             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
         ):
             from app.main import app
@@ -567,7 +651,7 @@ class TestSseRequestId:
             patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
             patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
             patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
-            patch("app.routers.chat.stream_health_answer", side_effect=mock_stream),
+            patch("app.services.chat_stream.stream_health_answer", side_effect=mock_stream),
             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
         ):
             from app.main import app
@@ -636,7 +720,7 @@ class TestSseRequestId:
             patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
             patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
             patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
-            patch("app.routers.chat.stream_health_answer", side_effect=slow_stream),
+            patch("app.services.chat_stream.stream_health_answer", side_effect=slow_stream),
             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
             patch("app.routers.chat._persist_turns", side_effect=_track_persist),
             patch("app.routers.chat.memory.get_history", new_callable=AsyncMock, return_value=[]),

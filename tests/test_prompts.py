@@ -108,3 +108,50 @@ def test_disclaimers_unchanged():
     assert DISCLAIMERS["ru"] == "Это не медицинский диагноз и не замена консультации врача."
     assert DISCLAIMERS["en"] == "This is not a medical diagnosis and does not replace consultation with a doctor."
     assert DISCLAIMERS["kk"] == "Бұл медициналық диагноз емес және дәрігер кеңесін алмастырмайды."
+
+
+# --------------- Disclaimer single-source-of-truth ---------------
+# DISCLAIMERS[locale] is appended deterministically by chat.py / chat_stream.py.
+# The system prompt must NOT instruct the model to also write its own disclaimer,
+# otherwise both end up in the answer (regression seen in the field, May 2026).
+
+_NO_DISCLAIMER_STEP_TOKENS = {
+    "ru": ("Заверши дисклеймером", "носят информационный характер"),
+    "en": ("End with a disclaimer", "answers are informational"),
+    "kk": ("Дисклеймермен аяқта", "ақпараттық сипатта екенін"),
+}
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+def test_system_prompts_have_no_disclaimer_step(locale):
+    prompt = SYSTEM_PROMPTS[locale]
+    for token in _NO_DISCLAIMER_STEP_TOKENS[locale]:
+        assert token not in prompt, (
+            f"System prompt for '{locale}' still tells the model to write a disclaimer "
+            f"({token!r}). The deterministic post-process in chat.py is the single source — "
+            f"keeping the instruction here causes a duplicate disclaimer in every answer."
+        )
+
+
+# --------------- symptom_check addon must be history-aware ---------------
+# The addon used to unconditionally tell the model to gather 4-5 clarifying details,
+# which made the bot re-ask the same questions on every turn even after the user
+# already answered. The fix instructs the model to consult history first.
+
+_HISTORY_AWARE_TOKENS = {
+    "ru": ("уже сообщил", "НЕ задавай"),
+    "en": ("already", "DO NOT ask"),
+    "kk": ("бұрын", "ҚАЙТА СҰРАМА"),
+}
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+def test_symptom_check_addon_is_history_aware(locale):
+    # Case-insensitive — the prompt uses stylistic uppercase emphasis (УЖЕ, БҰРЫН, DO NOT)
+    # that we don't want to pin in the test.
+    addon = ADDON_PROMPTS["symptom_check"][locale].lower()
+    for token in _HISTORY_AWARE_TOKENS[locale]:
+        assert token.lower() in addon, (
+            f"symptom_check addon for '{locale}' is missing history-awareness marker "
+            f"{token!r}. Without it the model re-asks already-answered questions every turn."
+        )

@@ -92,6 +92,56 @@ class TestFullChatFlow:
         data = resp.json()
         assert data["answer"].startswith("Follow-up answer")
 
+    async def test_symptom_check_history_reaches_llm(self, mock_redis, mock_qdrant):
+        """Regression: in the field the bot kept re-asking 'when did it start, intensity,
+        what did you try' on every turn even though the user had already answered. The
+        re-ask was a prompt-level issue (fixed in app/prompts.py), but this test pins
+        the plumbing: when the client sends prior turns in `history`, those turns must
+        reach `generate_health_answer` so the model has any chance of using them."""
+        mock_intent = IntentResult(
+            category="symptom_check", confidence=0.95, requires_followup=False, detected_entities={}, risk_level="medium"
+        )
+
+        captured: dict = {}
+
+        async def capture_history(*args, **kwargs):
+            captured["history"] = kwargs.get("history")
+            return "Recommendation based on prior turns."
+
+        with patch("app.services.redis_client._redis", mock_redis), \
+             patch("app.services.redis_client.get_redis", return_value=mock_redis), \
+             patch("app.services.vector_client._qdrant", mock_qdrant), \
+             patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
+             patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock), \
+             patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent), \
+             patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)), \
+             patch("app.routers.chat.generate_health_answer", side_effect=capture_history), \
+             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock):
+
+            from app.main import app
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat",
+                    json={
+                        "message": "Все попробовал боль 9 из 10, очень фигово",
+                        "locale": "ru",
+                        "history": [
+                            {"role": "user", "content": "Болит рука"},
+                            {"role": "assistant", "content": "Когда началось? Интенсивность?"},
+                        ],
+                    },
+                    headers={"X-Service-Token": "test-token", "X-User-Id": "user-42"},
+                )
+
+        assert resp.status_code == 200
+        history = captured.get("history")
+        assert history is not None and len(history) == 2, (
+            f"Expected the 2 prior turns to be forwarded to generate_health_answer; got {history!r}"
+        )
+        assert history[0]["content"] == "Болит рука"
+        assert history[1]["content"] == "Когда началось? Интенсивность?"
+
     async def test_rag_failure_graceful(self, mock_redis, mock_qdrant):
         """If RAG fails, the flow should continue without RAG context."""
         mock_intent = IntentResult(category="general_health", confidence=0.85, requires_followup=False, detected_entities={}, risk_level="low")
@@ -141,7 +191,7 @@ class TestStreamingFlow:
              patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock), \
              patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent), \
              patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)), \
-             patch("app.routers.chat.stream_health_answer", side_effect=mock_stream), \
+             patch("app.services.chat_stream.stream_health_answer", side_effect=mock_stream), \
              patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock):
 
             from app.main import app
