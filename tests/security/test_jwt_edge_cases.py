@@ -99,6 +99,114 @@ class TestJwtEdgeCases:
         assert await _chat(app_with_jwt, token=tampered) == 401
 
 
+class TestJwtAudienceIssuer:
+    """S1: when audience/issuer are set in config, mismatched tokens are rejected."""
+
+    async def test_audience_match_accepted(self, app_with_jwt):
+        from app import config as config_module
+
+        config_module.settings.jwt_audience = "health-ai"
+        try:
+            now = int(dt.datetime.now(dt.UTC).timestamp())
+            token = _make_token(
+                {"sub": "user-1", "iat": now, "exp": now + 3600, "aud": "health-ai"}
+            )
+            # 401 only on auth — anything else means it got past the guard.
+            assert await _chat(app_with_jwt, token=token) != 401
+        finally:
+            config_module.settings.jwt_audience = None
+
+    async def test_audience_mismatch_rejected(self, app_with_jwt):
+        from app import config as config_module
+
+        config_module.settings.jwt_audience = "health-ai"
+        try:
+            now = int(dt.datetime.now(dt.UTC).timestamp())
+            token = _make_token(
+                {"sub": "user-1", "iat": now, "exp": now + 3600, "aud": "other-service"}
+            )
+            assert await _chat(app_with_jwt, token=token) == 401
+        finally:
+            config_module.settings.jwt_audience = None
+
+    async def test_audience_required_when_configured(self, app_with_jwt):
+        from app import config as config_module
+
+        config_module.settings.jwt_audience = "health-ai"
+        try:
+            now = int(dt.datetime.now(dt.UTC).timestamp())
+            # Token with no `aud` claim → 401 because `require` includes aud.
+            token = _make_token({"sub": "user-1", "iat": now, "exp": now + 3600})
+            assert await _chat(app_with_jwt, token=token) == 401
+        finally:
+            config_module.settings.jwt_audience = None
+
+    async def test_issuer_mismatch_rejected(self, app_with_jwt):
+        from app import config as config_module
+
+        config_module.settings.jwt_issuer = "laravel-prod"
+        try:
+            now = int(dt.datetime.now(dt.UTC).timestamp())
+            token = _make_token(
+                {"sub": "user-1", "iat": now, "exp": now + 3600, "iss": "wrong-issuer"}
+            )
+            assert await _chat(app_with_jwt, token=token) == 401
+        finally:
+            config_module.settings.jwt_issuer = None
+
+    async def test_hs256_token_rejected(self, app_with_jwt):
+        """S1: algorithms is hardcoded to ["RS256"] — any HS256 token (regardless
+        of secret) must be rejected at the algorithm-list check, before signature
+        verification even runs. PyJWT additionally blocks HS256-with-PEM-key on
+        the encoding side, so the attack is doubly stopped."""
+        now = int(dt.datetime.now(dt.UTC).timestamp())
+        token = jwt.encode(
+            {"sub": "attacker", "iat": now, "exp": now + 3600},
+            "any-string-secret",
+            algorithm="HS256",
+        )
+        assert await _chat(app_with_jwt, token=token) == 401
+
+
+class TestProdSafetyJwt:
+    """S1: in production, enabling JWT auth without aud/iss must raise."""
+
+    def test_prod_jwt_pubkey_without_audience_raises(self, monkeypatch):
+        from app.config import Settings
+
+        env = {
+            "APP_ENV": "production",
+            "ENABLE_DEV_ROUTES": "false",
+            "OPENAI_API_KEY": "sk-test-key",
+            "SERVICE_TOKEN": "a-strong-random-token-xyz",
+            "REDIS_URL": "redis://:secret@redis:6379/0",
+            "JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----",
+            "JWT_AUDIENCE": "",  # missing
+            "JWT_ISSUER": "laravel",
+        }
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        with pytest.raises(ValueError, match="JWT_AUDIENCE.*JWT_ISSUER"):
+            Settings()
+
+    def test_prod_jwt_pubkey_with_aud_iss_passes(self, monkeypatch):
+        from app.config import Settings
+
+        env = {
+            "APP_ENV": "production",
+            "ENABLE_DEV_ROUTES": "false",
+            "OPENAI_API_KEY": "sk-test-key",
+            "SERVICE_TOKEN": "a-strong-random-token-xyz",
+            "REDIS_URL": "redis://:secret@redis:6379/0",
+            "JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----",
+            "JWT_AUDIENCE": "health-ai",
+            "JWT_ISSUER": "laravel",
+        }
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        Settings()  # no raise
+
+
 class TestServiceTokenRotation:
     async def test_rotation_accepts_any_csv_token(self, mock_redis, mock_qdrant, monkeypatch):
         monkeypatch.setenv("SERVICE_TOKEN", "old-token,new-token")

@@ -24,6 +24,7 @@ from .routers.conversations import router as conv_router
 from .routers.rag import router as rag_router
 from .routers.triage import router as triage_router
 from .services.intent_embeddings import initialize_exemplar_embeddings
+from .services.openai_client import close_openai, init_openai
 from .services.redis_client import close_redis, get_redis, init_redis
 from .services.vector_client import close_qdrant, get_qdrant, init_qdrant
 from .services.vector_store import ensure_qdrant_collection
@@ -33,6 +34,7 @@ from .services.vector_store import ensure_qdrant_collection
 async def lifespan(app: FastAPI):
     await init_redis()
     await init_qdrant()
+    await init_openai()
     await ensure_qdrant_collection()
     # Build the intent-classifier fast-path index. Non-fatal: if embedding the
     # exemplars fails (e.g. OpenAI is unreachable at boot) classify_intent
@@ -53,6 +55,7 @@ async def lifespan(app: FastAPI):
                 logger.warning("Force-cancelling %d streams after shutdown timeout", len(pending))
                 for task in pending:
                     task.cancel()
+        await close_openai()
         await close_qdrant()
         await close_redis()
 
@@ -101,6 +104,9 @@ if _tracing_enabled:
     instrument_app(app)
 
 if settings.allowed_origins == "*":
+    # M5: in production this combination is rejected by `_validate_prod_safety`
+    # at boot, so we never reach this branch with `app_env=production` — the
+    # warning + credentials-downgrade below is dev/staging defense-in-depth.
     origins = ["*"]
     allow_credentials = False
     if settings.app_env == "production":

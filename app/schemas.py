@@ -187,6 +187,14 @@ class ChatSource(BaseModel):
     title: str | None = Field(default=None, description="Human-readable title of the source document.")
     language: str | None = Field(default=None, description="Language of the source chunk (ISO 639-1).")
     score: float = Field(..., description="Cosine similarity score of the retrieved chunk (0–1).")
+    is_fallback: bool | None = Field(
+        default=None,
+        description=(
+            "True when the chunk was retrieved via cross-language fallback (request locale "
+            "had too few matches and the search was rerun without a language filter). Lets "
+            "clients flag such results visually. Omitted otherwise."
+        ),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

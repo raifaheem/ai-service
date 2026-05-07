@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 from ..config import settings
 from .redis_client import get_redis
@@ -47,6 +47,13 @@ EVENT_TRIAGE_STEP = "triage.step"
 EVENT_TRIAGE_COMPLETE = "triage.complete"
 EVENT_TRIAGE_RED_FLAG_EXIT = "triage.red_flag_exit"
 EVENT_TRIAGE_ABANDONED = "triage.abandoned"
+EVENT_TRIAGE_INJECTION_BLOCKED = "triage.injection_blocked"
+# Sensitive-topic policy blocks (off-policy non-medical content: sex, profanity,
+# recreational drugs, violence). Distinct from injection_blocked — different
+# semantics, different forensic signal.
+EVENT_CHAT_SENSITIVE_BLOCKED = "chat.sensitive_blocked"
+EVENT_TRIAGE_SENSITIVE_BLOCKED = "triage.sensitive_blocked"
+EVENT_ARTICLE_SENSITIVE_BLOCKED = "article.sensitive_blocked"
 
 
 async def record_audit_event(
@@ -74,7 +81,10 @@ async def record_audit_event(
 
     try:
         r = get_redis()
-        await r.xadd(
+        # redis-py types `xadd`'s fields dict as invariant `dict[<bytes|str|int|float>,
+        # <bytes|str|int|float>]`; our `entry` is the equivalent `dict[str, str]` but
+        # mypy refuses the implicit upcast. Cast `r` to `Any` to suppress.
+        await cast(Any, r).xadd(
             _stream_key(),
             entry,
             maxlen=_AUDIT_STREAM_MAXLEN,

@@ -4,6 +4,10 @@ os.environ["OPENAI_API_KEY"] = "test-openai-key"
 os.environ["SERVICE_TOKEN"] = "test-token"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["QDRANT_URL"] = "http://localhost:6333"
+# L3: production default is now False (explicit opt-in); tests exercise the
+# dev-only RAG endpoints, so we re-enable here. Per-test prod-safety tests
+# override this via monkeypatch.
+os.environ.setdefault("ENABLE_DEV_ROUTES", "true")
 
 import time
 from dataclasses import dataclass
@@ -125,6 +129,37 @@ class _FakeRedis:
             return -1
         return max(0, int(deadline - time.time()))
 
+    # --- hashes — used by the distributed circuit breaker (A3) ---
+
+    def _hash(self, key: str) -> dict[str, str]:
+        self._evict_if_expired(key)
+        store = self._store.get(key)
+        if not isinstance(store, dict):
+            store = {}
+            self._store[key] = store
+        return store
+
+    async def hset(self, key: str, mapping: dict | None = None, **kwargs):
+        if mapping is None:
+            mapping = kwargs
+        h = self._hash(key)
+        h.update({k: str(v) for k, v in mapping.items()})
+        return len(mapping)
+
+    async def hgetall(self, key: str) -> dict[str, str]:
+        self._evict_if_expired(key)
+        store = self._store.get(key)
+        if not isinstance(store, dict):
+            return {}
+        return dict(store)
+
+    async def hincrby(self, key: str, field: str, amount: int = 1) -> int:
+        h = self._hash(key)
+        current = int(h.get(field, "0"))
+        current += amount
+        h[field] = str(current)
+        return current
+
     # --- sorted sets (ZSET) — used by sliding-window rate limiting ---
 
     def _zset(self, key: str) -> dict[str, float]:
@@ -199,6 +234,24 @@ class _FakePipeline:
 def mock_redis():
     """Stateful async Redis stand-in. Each test gets a fresh instance."""
     return _FakeRedis()
+
+
+@pytest.fixture(autouse=True)
+def _reset_circuit_breakers():
+    """Reset module-level breakers' local state between tests.
+
+    Without this, an `openai_breaker` opened by an earlier failure-injection test
+    stays open for every subsequent test in the process. The plain attribute
+    reset avoids `await reset()` so this works for both sync and async tests.
+    """
+    from app.services.circuit_breaker import openai_breaker, qdrant_breaker
+
+    for cb in (openai_breaker, qdrant_breaker):
+        cb._local_state = "closed"
+        cb._local_failure_count = 0
+        cb._local_last_failure = 0.0
+        cb._last_sync = 0.0
+    yield
 
 
 # --------------- Mock Qdrant ---------------

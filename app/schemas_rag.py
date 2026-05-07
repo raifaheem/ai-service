@@ -4,17 +4,31 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class RAGChunkIn(BaseModel):
-    text: str = Field(..., min_length=1, description="Chunk text content.")
-    source_id: str = Field(..., min_length=1, description="Identifier of the source document this chunk belongs to.")
-    title: str | None = Field(default=None, description="Optional source title.")
-    language: str = Field(default="ru", description="Chunk language ('ru', 'en', 'kk').")
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=8000,
+        description="Chunk text content (max 8000 chars). The header-aware chunker keeps real chunks under ~1500 chars; the cap exists to bound dev-route abuse.",
+    )
+    source_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Identifier of the source document this chunk belongs to.",
+    )
+    title: str | None = Field(default=None, max_length=500, description="Optional source title.")
+    language: str = Field(default="ru", max_length=8, description="Chunk language ('ru', 'en', 'kk').")
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Free-form chunk metadata stored in Qdrant payload."
     )
 
 
 class RAGIndexRequest(BaseModel):
-    chunks: list[RAGChunkIn] = Field(..., description="Chunks to upsert into the vector store.")
+    chunks: list[RAGChunkIn] = Field(
+        ...,
+        max_length=200,
+        description="Chunks to upsert into the vector store (max 200 per request).",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -36,10 +50,11 @@ class RAGIndexRequest(BaseModel):
 
 
 class RAGSearchRequest(BaseModel):
-    query: str = Field(..., min_length=1, description="Natural-language search query.")
+    query: str = Field(..., min_length=1, max_length=500, description="Natural-language search query (max 500 chars).")
     limit: int = Field(default=5, ge=1, le=20, description="Max number of chunks to return (1–20).")
     language: str | None = Field(
         default=None,
+        max_length=8,
         description="Optional language filter. When omitted, all languages are searched.",
     )
 

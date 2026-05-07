@@ -1,19 +1,14 @@
-import asyncio
-import json
+import contextlib
+import hashlib
 import logging
 import uuid
 from typing import Any
-
-logger = logging.getLogger(__name__)
-
-import contextlib
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from openai import APIConnectionError, APIStatusError, AuthenticationError, RateLimitError
 
 from ..context import get_request_id, set_conversation_id, set_user_id
-from ..lifecycle import is_shutting_down, register_stream
 from ..metrics import metrics
 from ..schemas import ChatIntent, ChatRequest, ChatResponse, ChatSource
 from ..security import auth_guard, resolve_user_id
@@ -21,13 +16,17 @@ from ..services import memory
 from ..services.audit import (
     EVENT_CHAT_ANSWER,
     EVENT_CHAT_INJECTION_BLOCKED,
+    EVENT_CHAT_SENSITIVE_BLOCKED,
     record_audit_event,
 )
+from ..services.chat_stream import StreamContext, chat_event_generator, sse
 from ..services.circuit_breaker import DEGRADED_MESSAGES, openai_breaker
 from ..services.content_filter import check_response_safety
+from ..services.content_safety import SENSITIVE_REFUSAL, detect_sensitive_topic
 from ..services.i18n import get_disclaimer, get_emergency_phone, get_prompt_addon, normalize_locale
 from ..services.intent import IntentResult, classify_intent
-from ..services.llm import generate_health_answer, stream_health_answer
+from ..services.llm import generate_health_answer
+from ..services.openai_call_guard import OpenAIUnavailable
 from ..services.rag import build_rag_context, compress_sources
 from ..services.rate_limit import enforce_rate_limit
 from ..services.safety import INJECTION_REFUSAL, detect_injection, sanitize_input
@@ -39,6 +38,8 @@ from ..services.summarizer import (
 )
 from ..tracing import tracer
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/v1", tags=["chat"])
 
 OFF_TOPIC_MESSAGES = {
@@ -46,6 +47,22 @@ OFF_TOPIC_MESSAGES = {
     "en": "I'm a health assistant and can help with questions about health, nutrition, physical activity, sleep, and mental well-being. Please ask a health-related question.",
     "kk": "Мен денсаулық көмекшісімін және денсаулық, тамақтану, дене белсенділігі, ұйқы және ментальді әл-ауқат туралы сұрақтарға көмектесе аламын. Денсаулыққа қатысты сұрақ қойыңыз.",
 }
+
+
+def _idempotency_fingerprint(req: ChatRequest) -> str:
+    """Stable hash of the request body fields that should affect the response.
+
+    Reusing an idempotency key with *different* fields (message, conversation,
+    region) is a client bug — A5 surfaces it as 409 rather than silently
+    replaying the prior cached answer.
+    """
+    parts = [
+        (req.message or "").encode("utf-8"),
+        (req.conversation_id or "").encode("utf-8"),
+        (req.locale or "").encode("utf-8"),
+        (req.region or "").encode("utf-8"),
+    ]
+    return hashlib.sha256(b"\x1f".join(parts), usedforsecurity=False).hexdigest()
 
 
 def _resolve_addon_prompt(intent: IntentResult, locale: str, region: str | None = None) -> str | None:
@@ -268,30 +285,69 @@ async def chat(
     prof = profile_to_text(req, locale=locale)
     disclaimer = get_disclaimer(locale)
 
-    # Idempotency: short-circuit to a cached response for retries that carry the
-    # same key. Scoped per user_id so two users choosing the same key don't collide.
+    # Idempotency (C.4 + A5): short-circuit retries that carry the same key AND
+    # the same body. A different body under the same key is a real client bug
+    # we want surfaced as 409 — silently returning a stale answer would mask it.
+    fingerprint = _idempotency_fingerprint(req)
     if req.idempotency_key:
         try:
-            cached = await memory.get_idempotent_response(user_id, req.idempotency_key)
+            entry = await memory.get_idempotent_entry(user_id, req.idempotency_key)
         except Exception:
-            cached = None
-        if cached:
+            entry = None
+        if entry:
+            if entry.get("fingerprint") != fingerprint:
+                logger.warning(
+                    "Idempotency conflict for user=%s key=%s: same key, different body",
+                    user_id,
+                    req.idempotency_key,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="idempotency_key reused with a different request body",
+                )
             logger.info(
                 "Idempotency hit for user=%s key=%s; returning cached response",
                 user_id,
                 req.idempotency_key,
             )
-            return ChatResponse(**cached)
+            # M1: audit the replay so forensics doesn't lose retried requests.
+            # We reuse `chat.answer` with `cached=true` rather than a new event
+            # type — keeps "answers served" a single dashboard query.
+            cached_response = ChatResponse(**entry["response"])
+            cached_intent = cached_response.intent
+            await record_audit_event(
+                EVENT_CHAT_ANSWER,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                request_id=get_request_id(),
+                intent_category=(cached_intent.category if cached_intent else ""),
+                risk_level=(cached_intent.risk_level if cached_intent else ""),
+                rag_used=bool(cached_response.rag_used),
+                rag_score=cached_response.rag_score,
+                locale=locale,
+                cached=True,
+                idempotency_key=req.idempotency_key,
+            )
+            return cached_response
 
     rate_limit_id = f"user:{user_id}"
     await enforce_rate_limit(rate_limit_id)
 
     if req.conversation_id:
+        # B1: fail-closed when Redis can't confirm ownership. The pre-blocker
+        # behaviour was to log + proceed, which let an attacker who could
+        # transiently disrupt Redis read/inject into another user's
+        # conversation. We now refuse with 503 — the request will be retried
+        # once Redis is healthy again, the matching `triage` and
+        # `conversations` routers already work this way (errors propagate).
         try:
             owner = await memory.get_owner(conversation_id)
-        except Exception:
-            logger.warning("Owner lookup failed for %s; proceeding without ownership check", conversation_id)
-            owner = None
+        except Exception as e:
+            logger.warning("Owner lookup failed for %s; refusing request", conversation_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Conversation ownership lookup unavailable; retry shortly.",
+            ) from e
         if owner and owner != user_id:
             raise HTTPException(status_code=403, detail="Access denied to this conversation")
 
@@ -306,6 +362,32 @@ async def chat(
             conversation_id=conversation_id,
             request_id=get_request_id(),
             locale=locale,
+        )
+        return ChatResponse(
+            answer=refusal,
+            disclaimer=disclaimer,
+            conversation_id=conversation_id,
+            rag_used=False,
+        )
+
+    # Sensitive-topic policy block: cheap regex pre-LLM gate for off-policy
+    # content (sexual / profanity / recreational drugs / violence). Self-harm
+    # and suicidal ideation are handled by the mental_health intent addon and
+    # are deliberately NOT included here.
+    sensitive = detect_sensitive_topic(req.message)
+    if sensitive is not None:
+        sanitized = sanitize_input(req.message)
+        refusal = SENSITIVE_REFUSAL.get(locale, SENSITIVE_REFUSAL["ru"])
+        await _persist_turns(conversation_id, sanitized, refusal, user_id, topic="blocked_sensitive")
+        await record_audit_event(
+            EVENT_CHAT_SENSITIVE_BLOCKED,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=get_request_id(),
+            locale=locale,
+            sensitive_category=sensitive.category,
+            locale_hit=sensitive.locale_hit,
+            pattern_id=sensitive.pattern_id,
         )
         return ChatResponse(
             answer=refusal,
@@ -329,6 +411,37 @@ async def chat(
         span.set_attribute("intent.confidence", float(intent.confidence))
         span.set_attribute("intent.risk_level", intent.risk_level)
     metrics.record_intent(intent.category, risk_level=intent.risk_level)
+
+    # LLM-fallback for content the regex pre-gate missed (paraphrase, novel
+    # obfuscation, foreign-language slang). The regex is the cheap first line;
+    # the classifier is the catch-net.
+    if intent.category == "sensitive_blocked":
+        refusal = SENSITIVE_REFUSAL.get(locale, SENSITIVE_REFUSAL["ru"])
+        await _persist_turns(
+            conversation_id,
+            user_message,
+            refusal,
+            user_id,
+            topic="blocked_sensitive_llm",
+            turn_count=len(history) + 2,
+        )
+        await record_audit_event(
+            EVENT_CHAT_SENSITIVE_BLOCKED,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=get_request_id(),
+            locale=locale,
+            sensitive_category="llm_classified",
+            locale_hit="n/a",
+            pattern_id="intent_llm",
+        )
+        return ChatResponse(
+            answer=refusal,
+            disclaimer=disclaimer,
+            conversation_id=conversation_id,
+            rag_used=False,
+            intent=ChatIntent(category=intent.category, risk_level=intent.risk_level, confidence=intent.confidence),
+        )
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
@@ -391,9 +504,11 @@ async def chat(
                 temperature=intent.temperature,
                 summary=summary,
             )
-            await openai_breaker.record_success()
+        except OpenAIUnavailable as e:
+            degraded = DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"])
+            raise HTTPException(status_code=503, detail=degraded) from e
         except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
-            await openai_breaker.record_failure()
+            # Breaker already recorded the failure inside the guard.
             status_code, message, _ = map_openai_error(e)
             raise HTTPException(status_code, message) from e
 
@@ -439,7 +554,12 @@ async def chat(
     # Cache for idempotent retries (10-minute TTL). Non-fatal on Redis errors.
     if req.idempotency_key:
         try:
-            await memory.set_idempotent_response(user_id, req.idempotency_key, response.model_dump(mode="json"))
+            await memory.set_idempotent_entry(
+                user_id,
+                req.idempotency_key,
+                fingerprint,
+                response.model_dump(mode="json"),
+            )
         except Exception:
             logger.debug("Failed to cache idempotent response for %s", req.idempotency_key)
 
@@ -504,11 +624,20 @@ async def chat_stream(
     await enforce_rate_limit(rate_limit_id)
 
     if req.conversation_id:
+        # B1: fail-closed when Redis can't confirm ownership. The pre-blocker
+        # behaviour was to log + proceed, which let an attacker who could
+        # transiently disrupt Redis read/inject into another user's
+        # conversation. We now refuse with 503 — the request will be retried
+        # once Redis is healthy again, the matching `triage` and
+        # `conversations` routers already work this way (errors propagate).
         try:
             owner = await memory.get_owner(conversation_id)
-        except Exception:
-            logger.warning("Owner lookup failed for %s; proceeding without ownership check", conversation_id)
-            owner = None
+        except Exception as e:
+            logger.warning("Owner lookup failed for %s; refusing request", conversation_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Conversation ownership lookup unavailable; retry shortly.",
+            ) from e
         if owner and owner != user_id:
             raise HTTPException(status_code=403, detail="Access denied to this conversation")
 
@@ -519,9 +648,9 @@ async def chat_stream(
         await _persist_turns(conversation_id, sanitized, refusal, user_id, topic="blocked_injection")
 
         async def injection_generator():
-            yield _sse("meta", {"conversation_id": conversation_id})
-            yield _sse("delta", {"text": refusal})
-            yield _sse(
+            yield sse("meta", {"conversation_id": conversation_id})
+            yield sse("delta", {"text": refusal})
+            yield sse(
                 "final",
                 {
                     "conversation_id": conversation_id,
@@ -538,6 +667,43 @@ async def chat_stream(
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         return StreamingResponse(injection_generator(), media_type="text/event-stream", headers=headers)
 
+    # Sensitive-topic policy block (mirror of sync chat path)
+    sensitive = detect_sensitive_topic(req.message)
+    if sensitive is not None:
+        sanitized = sanitize_input(req.message)
+        refusal = SENSITIVE_REFUSAL.get(locale, SENSITIVE_REFUSAL["ru"])
+        await _persist_turns(conversation_id, sanitized, refusal, user_id, topic="blocked_sensitive")
+        await record_audit_event(
+            EVENT_CHAT_SENSITIVE_BLOCKED,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=get_request_id(),
+            locale=locale,
+            sensitive_category=sensitive.category,
+            locale_hit=sensitive.locale_hit,
+            pattern_id=sensitive.pattern_id,
+        )
+
+        async def sensitive_generator():
+            yield sse("meta", {"conversation_id": conversation_id})
+            yield sse("delta", {"text": refusal})
+            yield sse(
+                "final",
+                {
+                    "conversation_id": conversation_id,
+                    "answer": refusal,
+                    "disclaimer": disclaimer,
+                    "model": None,
+                    "finish_reason": "sensitive_blocked",
+                    "usage": None,
+                    "rag_used": False,
+                    "sources": [],
+                },
+            )
+
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        return StreamingResponse(sensitive_generator(), media_type="text/event-stream", headers=headers)
+
     # Safety: sanitize input
     user_message = sanitize_input(req.message)
 
@@ -549,6 +715,53 @@ async def chat_stream(
     redis_client = _get_redis_or_none()
     intent = await classify_intent(user_message, history=history, redis_client=redis_client, locale=locale)
     metrics.record_intent(intent.category, risk_level=intent.risk_level)
+
+    # LLM-fallback for sensitive content the regex pre-gate missed (SSE).
+    if intent.category == "sensitive_blocked":
+        refusal = SENSITIVE_REFUSAL.get(locale, SENSITIVE_REFUSAL["ru"])
+        await _persist_turns(
+            conversation_id,
+            user_message,
+            refusal,
+            user_id,
+            topic="blocked_sensitive_llm",
+            turn_count=len(history) + 2,
+        )
+        await record_audit_event(
+            EVENT_CHAT_SENSITIVE_BLOCKED,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=get_request_id(),
+            locale=locale,
+            sensitive_category="llm_classified",
+            locale_hit="n/a",
+            pattern_id="intent_llm",
+        )
+
+        async def sensitive_llm_generator():
+            yield sse("meta", {"conversation_id": conversation_id})
+            yield sse("delta", {"text": refusal})
+            yield sse(
+                "final",
+                {
+                    "conversation_id": conversation_id,
+                    "answer": refusal,
+                    "disclaimer": disclaimer,
+                    "model": None,
+                    "finish_reason": "sensitive_blocked",
+                    "usage": None,
+                    "rag_used": False,
+                    "sources": [],
+                    "intent": {
+                        "category": intent.category,
+                        "risk_level": intent.risk_level,
+                        "confidence": intent.confidence,
+                    },
+                },
+            )
+
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        return StreamingResponse(sensitive_llm_generator(), media_type="text/event-stream", headers=headers)
 
     if intent.category == "off_topic" and intent.confidence >= 0.7:
         off_topic_answer = OFF_TOPIC_MESSAGES.get(locale, OFF_TOPIC_MESSAGES["ru"])
@@ -562,9 +775,9 @@ async def chat_stream(
         )
 
         async def off_topic_generator():
-            yield _sse("meta", {"conversation_id": conversation_id})
-            yield _sse("delta", {"text": off_topic_answer})
-            yield _sse(
+            yield sse("meta", {"conversation_id": conversation_id})
+            yield sse("delta", {"text": off_topic_answer})
+            yield sse(
                 "final",
                 {
                     "conversation_id": conversation_id,
@@ -610,8 +823,8 @@ async def chat_stream(
         degraded = DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"])
 
         async def degraded_generator():
-            yield _sse("meta", {"conversation_id": conversation_id})
-            yield _sse(
+            yield sse("meta", {"conversation_id": conversation_id})
+            yield sse(
                 "error",
                 {
                     "conversation_id": conversation_id,
@@ -623,160 +836,70 @@ async def chat_stream(
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         return StreamingResponse(degraded_generator(), media_type="text/event-stream", headers=headers)
 
-    async def event_generator():
-        task = asyncio.current_task()
-        if task is not None:
-            register_stream(task)
-        yield _sse("meta", {"conversation_id": conversation_id})
-
-        if is_shutting_down():
-            yield _sse(
-                "error",
-                {
-                    "conversation_id": conversation_id,
-                    "code": "service_degraded",
-                    "message": DEGRADED_MESSAGES.get(locale, DEGRADED_MESSAGES["ru"]),
-                },
-            )
-            return
-
-        parts: list[str] = []
-        usage_payload: dict | None = None
-        model_name: str | None = None
-        finish_reason: str | None = None
-
-        try:
-            client_gone = False
-            async for ev in stream_health_answer(
-                user_message,
-                locale=locale,
-                profile_text=prof,
-                history=trimmed_history,
-                rag_context=rag_context,
-                addon_prompt=addon_prompt,
-                temperature=intent.temperature,
-                summary=summary,
-            ):
-                # Cheap ASGI-buffered check — if the client hung up, stop pulling
-                # more tokens from OpenAI (saves $$$) and don't persist a half-
-                # finished answer.
-                if await request.is_disconnected():
-                    logger.info(
-                        "Client disconnected mid-stream, aborting %s",
-                        conversation_id,
-                    )
-                    client_gone = True
-                    break
-
-                if ev.get("type") == "delta":
-                    text = ev.get("text", "")
-                    if text:
-                        parts.append(text)
-                        yield _sse("delta", {"text": text})
-
-                elif ev.get("type") == "usage":
-                    usage_payload = ev.get("usage")
-                    model_name = ev.get("model")
-                    finish_reason = ev.get("finish_reason")
-
-            if client_gone:
-                # Exit silently — the client is no longer reading; no point
-                # writing a `final` event or persisting the conversation turn.
-                return
-
-            await openai_breaker.record_success()
-            raw_answer = "".join(parts).strip()
-            # Content safety filter
-            raw_answer, _filters = check_response_safety(raw_answer, locale=locale)
-            answer_to_user = raw_answer
-            if disclaimer.lower() not in answer_to_user.lower():
-                answer_to_user = f"{answer_to_user}\n\n{disclaimer}"
-
-            await _persist_turns(
-                conversation_id,
-                user_message,
-                raw_answer,
-                user_id,
-                topic=intent.category,
-                turn_count=len(history) + 2,
-            )
-
-            yield _sse(
-                "final",
-                {
-                    "conversation_id": conversation_id,
-                    "answer": answer_to_user,
-                    "disclaimer": disclaimer,
-                    "model": model_name,
-                    "finish_reason": finish_reason,
-                    "usage": usage_payload,
-                    "rag_used": bool(rag_chunks),
-                    "rag_score": rag_score,
-                    "sources": sources,
-                    "intent": {
-                        "category": intent.category,
-                        "risk_level": intent.risk_level,
-                        "confidence": intent.confidence,
-                    },
-                },
-            )
-
-        except (RateLimitError, APIConnectionError, AuthenticationError, APIStatusError) as e:
-            await openai_breaker.record_failure()
-            _, message, code = map_openai_error(e)
-            yield _sse(
-                "error",
-                {
-                    "conversation_id": conversation_id,
-                    "code": code,
-                    "message": message,
-                },
-            )
-        except Exception:
-            logger.exception("Unexpected error in chat stream for %s", conversation_id)
-            yield _sse(
-                "error",
-                {
-                    "conversation_id": conversation_id,
-                    "code": "internal_error",
-                    "message": "Internal server error.",
-                },
-            )
+    ctx = StreamContext(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        locale=locale,
+        user_message=user_message,
+        profile_text=prof,
+        history_count=len(history),
+        trimmed_history=trimmed_history,
+        summary=summary,
+        rag_context=rag_context,
+        rag_chunks=rag_chunks,
+        rag_score=rag_score,
+        sources=sources,
+        addon_prompt=addon_prompt,
+        intent=intent,
+        disclaimer=disclaimer,
+    )
 
     headers = {
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
     }
-    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
-
-
-def _sse(event: str, data: dict) -> str:
-    # Inject request_id into every SSE payload so support tickets can cite a single
-    # id that matches the response header and application-log entries. An explicit
-    # request_id in `data` wins (kept for future overrides).
-    payload = {"request_id": get_request_id(), **data}
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return StreamingResponse(
+        chat_event_generator(ctx, request),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 def request_history_to_messages(req: ChatRequest) -> list[dict]:
+    """Convert client-supplied history turns into LLM-message dicts.
+
+    M11: previously sliced to the last 8 turns, which diverged from the Redis
+    path (`memory.get_history` returns up to REDIS_MAX_TURNS=12 unchanged).
+    Now the whole client-supplied history flows through; the summarizer
+    (`SUMMARIZE_THRESHOLD=8`) decides what to keep verbatim vs replace with a
+    summary, so both paths converge.
+    """
     if not req.history:
         return []
 
     result = []
-    for t in req.history[-8:]:
+    for t in req.history:
         content = t.content.strip()
         if content:
             result.append({"role": t.role, "content": content})
     return result
 
 
+# User-facing message is intentionally generic — the upstream provider, error
+# class, status code, and config-sensitive hints are all an information-disclosure
+# risk if echoed verbatim to clients. The discriminator `code` (machine-readable)
+# stays specific so clients/SDKs can branch on it; logs keep the original
+# exception for operators.
+_GENERIC_UPSTREAM_MESSAGE = "Upstream service unavailable."
+
+
 def map_openai_error(e: Exception) -> tuple[int, str, str]:
     if isinstance(e, RateLimitError):
-        return 503, "OpenAI quota/billing issue.", "openai_rate_limit"
+        return 503, _GENERIC_UPSTREAM_MESSAGE, "openai_rate_limit"
     if isinstance(e, AuthenticationError):
-        return 502, "OpenAI auth failed. Check OPENAI_API_KEY.", "openai_auth"
+        return 502, _GENERIC_UPSTREAM_MESSAGE, "openai_auth"
     if isinstance(e, APIConnectionError):
-        return 502, "OpenAI connection error.", "openai_connection"
+        return 502, _GENERIC_UPSTREAM_MESSAGE, "openai_connection"
     if isinstance(e, APIStatusError):
-        return 502, f"OpenAI API error: {e.status_code}", "openai_api_status"
+        return 502, _GENERIC_UPSTREAM_MESSAGE, "openai_api_status"
     return 500, "Internal server error.", "internal_error"

@@ -1,8 +1,19 @@
+"""OpenAI embeddings client + Redis-backed cache.
+
+`embed_text` / `embed_texts` are the only entry points; both consult the
+Redis embedding cache before issuing an API call. The cache key includes
+the model name (`emb:{model}:{md5}`) so flipping `OPENAI_EMBEDDING_MODEL`
+invalidates entries automatically without a manual flush. All OpenAI
+round-trips go through `openai_call_guard` so failures count toward the
+shared circuit breaker.
+"""
+
 import hashlib
 import json
 import logging
 
 from ..config import settings
+from .openai_call_guard import openai_call_guard
 from .openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -15,6 +26,11 @@ EMBEDDING_DIMENSIONS = {
 
 
 def get_embedding_dimension() -> int:
+    """Return the vector dimension produced by `OPENAI_EMBEDDING_MODEL`.
+
+    Lifespan asserts this matches the Qdrant collection's vector size; mismatch
+    refuses to start the service.
+    """
     model = settings.openai_embedding_model
     size = EMBEDDING_DIMENSIONS.get(model)
     if size is None:
@@ -28,7 +44,7 @@ def normalize_text_for_embedding(text: str) -> str:
 
 def _emb_cache_key(normalized_text: str) -> str:
     digest = hashlib.md5(normalized_text.encode(), usedforsecurity=False).hexdigest()
-    return f"{settings.redis_prefix}:emb:{digest}"
+    return f"{settings.redis_prefix}:emb:{settings.openai_embedding_model}:{digest}"
 
 
 async def _get_cached_embedding(redis_client, key: str) -> list[float] | None:
@@ -49,6 +65,7 @@ async def _set_cached_embedding(redis_client, key: str, vector: list[float]) -> 
 
 
 async def embed_text(text: str, redis_client=None) -> list[float]:
+    """Embed a single string. Reads/writes the Redis cache when `redis_client` is supplied."""
     normalized = normalize_text_for_embedding(text)
     if not normalized:
         raise ValueError("Text for embedding is empty")
@@ -59,10 +76,11 @@ async def embed_text(text: str, redis_client=None) -> list[float]:
         if cached is not None:
             return cached
 
-    resp = await client.embeddings.create(
-        model=settings.openai_embedding_model,
-        input=normalized,
-    )
+    async with openai_call_guard():
+        resp = await client.embeddings.create(
+            model=settings.openai_embedding_model,
+            input=normalized,
+        )
     vector = resp.data[0].embedding
 
     if redis_client:
@@ -72,6 +90,8 @@ async def embed_text(text: str, redis_client=None) -> list[float]:
 
 
 async def embed_texts(texts: list[str], redis_client=None) -> list[list[float]]:
+    """Batch-embed a list of strings; resolves cached entries first and only
+    sends the uncached subset to OpenAI in a single batch call."""
     normalized = [normalize_text_for_embedding(t) for t in texts]
     normalized = [t for t in normalized if t]
 
@@ -98,10 +118,11 @@ async def embed_texts(texts: list[str], redis_client=None) -> list[list[float]]:
         results = [[] for _ in normalized]
 
     if uncached_texts:
-        resp = await client.embeddings.create(
-            model=settings.openai_embedding_model,
-            input=uncached_texts,
-        )
+        async with openai_call_guard():
+            resp = await client.embeddings.create(
+                model=settings.openai_embedding_model,
+                input=uncached_texts,
+            )
         vectors = [item.embedding for item in resp.data]
 
         for idx, vector in zip(uncached_indices, vectors, strict=False):

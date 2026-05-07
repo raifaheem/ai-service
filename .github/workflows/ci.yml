@@ -38,14 +38,13 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - run: pip install ruff==0.6.9
       - name: ruff check
-        run: ruff check app/
+        run: ruff check app/ scripts/
       - name: ruff format --check
-        run: ruff format --check app/
+        run: ruff format --check app/ scripts/
 
   typecheck:
     name: Type check (mypy)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

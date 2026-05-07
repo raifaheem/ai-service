@@ -3,6 +3,7 @@ import time
 
 from ..config import settings
 from ..metrics import metrics
+from .openai_call_guard import OpenAIUnavailable, openai_call_guard
 from .openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -56,15 +57,16 @@ async def summarize_conversation(
 
     try:
         _start = time.perf_counter()
-        resp = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": conversation_text.strip()},
-            ],
-            temperature=0.2,
-            max_tokens=250,
-        )
+        async with openai_call_guard():
+            resp = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": conversation_text.strip()},
+                ],
+                temperature=0.2,
+                max_tokens=250,
+            )
         _duration_ms = round((time.perf_counter() - _start) * 1000, 1)
         _usage = resp.usage
         if _usage:
@@ -81,6 +83,9 @@ async def summarize_conversation(
             metrics.record_openai_usage(_usage.prompt_tokens, _usage.completion_tokens, call_type="summarize")
         summary = (resp.choices[0].message.content or "").strip()
         return summary if summary else None
+    except OpenAIUnavailable:
+        logger.warning("Summarization skipped: OpenAI breaker is open")
+        return None
     except Exception:
         logger.exception("Failed to summarize conversation")
         return None

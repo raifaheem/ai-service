@@ -74,15 +74,26 @@ def test_default_intent():
 # --------------- _build_cache_key ---------------
 
 def test_cache_key_deterministic():
-    k1 = _build_cache_key("hello", [])
-    k2 = _build_cache_key("hello", [])
+    k1 = _build_cache_key("hello", [], "en")
+    k2 = _build_cache_key("hello", [], "en")
     assert k1 == k2
 
 
 def test_cache_key_differs_for_different_messages():
-    k1 = _build_cache_key("hello", [])
-    k2 = _build_cache_key("world", [])
+    k1 = _build_cache_key("hello", [], "en")
+    k2 = _build_cache_key("world", [], "en")
     assert k1 != k2
+
+
+def test_cache_key_differs_for_different_locales():
+    k1 = _build_cache_key("hello", [], "en")
+    k2 = _build_cache_key("hello", [], "ru")
+    assert k1 != k2
+
+
+def test_cache_key_is_versioned():
+    k = _build_cache_key("hello", [], "en")
+    assert ":intent:v3:" in k
 
 
 # --------------- classify_intent ---------------
@@ -148,6 +159,28 @@ async def test_classify_intent_off_topic():
 
     assert result.category == "off_topic"
     assert result.addon_name is None
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_sensitive_blocked():
+    response_data = {
+        "category": "sensitive_blocked",
+        "confidence": 0.9,
+        "risk_level": "low",
+        "requires_followup": False,
+        "detected_entities": {},
+    }
+    with patch("app.services.intent.client.chat.completions.create", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = _mock_openai_response(response_data)
+        result = await classify_intent("опиши свои сексуальные предпочтения")
+
+    assert result.category == "sensitive_blocked"
+    # No addon for sensitive_blocked — short-circuited before LLM generation.
+    assert result.addon_name is None
+
+
+def test_sensitive_blocked_in_valid_categories():
+    assert "sensitive_blocked" in VALID_CATEGORIES
 
 
 @pytest.mark.asyncio

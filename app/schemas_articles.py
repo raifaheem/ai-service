@@ -3,10 +3,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ArticleAnalyzeRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=500, description="Article title (1–500 chars).")
-    text: str = Field(..., min_length=200, description="Full article text. Must be at least 200 characters.")
-    language: str = Field(default="ru", description="Article language: 'ru', 'en', or 'kk'.")
+    text: str = Field(
+        ...,
+        min_length=200,
+        max_length=200_000,
+        description="Full article text (200–200000 chars). Longer inputs are rejected to bound LLM cost.",
+    )
+    language: str = Field(default="ru", max_length=8, description="Article language: 'ru', 'en', or 'kk'.")
     source_id: str | None = Field(
         default=None,
+        max_length=200,
         description="Optional external source identifier. When omitted, a UUID-based id is generated.",
     )
     index_chunks: bool = Field(
@@ -19,7 +25,15 @@ class ArticleAnalyzeRequest(BaseModel):
             "examples": [
                 {
                     "title": "Headache management — clinical guidelines",
-                    "text": "Primary headaches include migraine, tension-type headache, and cluster headache... (≥ 200 chars)",
+                    "text": (
+                        "Primary headaches include migraine, tension-type headache, and cluster "
+                        "headache. Most adults experience at least one episode per year, and "
+                        "self-care with over-the-counter analgesics resolves the majority of "
+                        "cases. Red flags warranting urgent evaluation: sudden thunderclap "
+                        "onset, new headache after age 50, fever with neck stiffness, or focal "
+                        "neurological deficits. Clinicians should ask about triggers, medication "
+                        "overuse, and sleep patterns before prescribing prophylaxis."
+                    ),
                     "language": "en",
                     "source_id": "who-headache-2024",
                     "index_chunks": True,

@@ -11,10 +11,14 @@ State transitions (same as a classic CB):
   half_open   → closed       on one successful call
   half_open   → open         on one failure
 
-Redis format (one key per breaker name, prefixed by settings.redis_prefix):
-  {prefix}:cb:{name}  →  JSON {state, failure_count, last_failure_time}
+Redis format (one HASH per breaker name, prefixed by settings.redis_prefix):
+  {prefix}:cb:{name}  →  HASH {state, failure_count, last_failure_time}
 
 Design choices:
+- **Atomic increments.** `record_failure` uses `HINCRBY` so two workers
+  recording failures concurrently can't under-count by racing on a
+  read-modify-write. State transitions are idempotent (both workers may
+  write the same `state=open` value, which is fine).
 - Fail-open on Redis errors. The breaker exists to protect upstream services;
   it must not itself become a SPOF when Redis blips.
 - Local-cache TTL of 1s caps Redis round-trips at ~1/s/worker per breaker,
@@ -22,16 +26,17 @@ Design choices:
 """
 
 import asyncio
-import json
 import logging
 import time
-from typing import Literal
+from typing import Any, Literal, cast
 
 from .redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
 State = Literal["closed", "open", "half_open"]
+
+_REDIS_TTL_SECONDS = 300
 
 
 class DistributedCircuitBreaker:
@@ -60,9 +65,17 @@ class DistributedCircuitBreaker:
 
         return f"{settings.redis_prefix}:cb:{self.name}"
 
+    @staticmethod
+    def _decode(value):
+        if isinstance(value, bytes):
+            return value.decode()
+        return value
+
     async def _sync_from_redis(self) -> None:
         try:
-            raw = await get_redis().get(self._key())
+            # redis-py async stubs declare hgetall as `Awaitable[dict] | dict`;
+            # cast to satisfy the type checker without runtime cost.
+            raw = await cast(Any, get_redis().hgetall(self._key()))
         except Exception:
             # Redis itself is failing — keep whatever local state we have and
             # let the request proceed; the breaker must not escalate outages.
@@ -70,7 +83,8 @@ class DistributedCircuitBreaker:
             self._last_sync = time.time()
             return
 
-        if not raw:
+        data: dict[str, str] = {self._decode(k): self._decode(v) for k, v in (raw or {}).items()}
+        if not data:
             self._local_state = "closed"
             self._local_failure_count = 0
             self._local_last_failure = 0.0
@@ -78,17 +92,16 @@ class DistributedCircuitBreaker:
             return
 
         try:
-            data = json.loads(raw)
-        except Exception:
+            self._local_state = cast(State, data.get("state", "closed"))
+            self._local_failure_count = int(data.get("failure_count", "0"))
+            self._local_last_failure = float(data.get("last_failure_time", "0.0"))
+        except (TypeError, ValueError):
             logger.warning("CB %s: corrupt state in Redis, resetting", self.name)
             self._local_state = "closed"
             self._local_failure_count = 0
+            self._local_last_failure = 0.0
             self._last_sync = time.time()
             return
-
-        self._local_state = data.get("state", "closed")
-        self._local_failure_count = int(data.get("failure_count", 0))
-        self._local_last_failure = float(data.get("last_failure_time", 0.0))
 
         # Transition open → half_open once the recovery window has passed.
         if self._local_state == "open" and time.time() - self._local_last_failure >= self.recovery_timeout:
@@ -96,18 +109,22 @@ class DistributedCircuitBreaker:
 
         self._last_sync = time.time()
 
-    async def _write_to_redis(self) -> None:
-        payload = json.dumps(
-            {
-                "state": self._local_state,
-                "failure_count": self._local_failure_count,
-                "last_failure_time": self._local_last_failure,
-            }
-        )
+    async def _hset_state(self) -> None:
+        """Persist state + last_failure_time (caller decided the values)."""
         try:
-            # Keep state for 5 minutes of inactivity — cleaner than leaving stale
-            # 'open' state behind if the service reboots.
-            await get_redis().set(self._key(), payload, ex=300)
+            r = get_redis()
+            await cast(
+                Any,
+                r.hset(
+                    self._key(),
+                    mapping={
+                        "state": self._local_state,
+                        "failure_count": str(self._local_failure_count),
+                        "last_failure_time": str(self._local_last_failure),
+                    },
+                ),
+            )
+            await cast(Any, r.expire(self._key(), _REDIS_TTL_SECONDS))
         except Exception:
             logger.debug("CB %s: write-to-redis failed", self.name)
 
@@ -130,25 +147,57 @@ class DistributedCircuitBreaker:
         return (await self.state) != "open"
 
     async def record_success(self) -> None:
-        # Only log the half_open -> closed transition — success in closed state is normal.
         was_half_open = self._local_state == "half_open"
         self._local_state = "closed"
         self._local_failure_count = 0
         self._local_last_failure = 0.0
         self._last_sync = time.time()
-        await self._write_to_redis()
+        await self._hset_state()
         if was_half_open:
             logger.info("Circuit breaker '%s' recovered (half_open -> closed)", self.name)
 
     async def record_failure(self) -> None:
-        self._local_failure_count += 1
-        self._local_last_failure = time.time()
-        should_open = self._local_state == "half_open" or self._local_failure_count >= self.failure_threshold
+        now = time.time()
+        self._local_last_failure = now
+
+        # HINCRBY makes the failure count Redis-authoritative — racing workers
+        # can't read 2, both write 3 (a 1-count loss). On Redis failure, fall
+        # back to a local-only count so the breaker still behaves on a single
+        # node.
+        try:
+            r = get_redis()
+            new_count = await cast(Any, r.hincrby(self._key(), "failure_count", 1))
+        except Exception:
+            new_count = self._local_failure_count + 1
+
+        self._local_failure_count = int(new_count)
+
+        was_half_open = self._local_state == "half_open"
+        should_open = was_half_open or self._local_failure_count >= self.failure_threshold
         previously = self._local_state
         if should_open:
             self._local_state = "open"
+
         self._last_sync = time.time()
-        await self._write_to_redis()
+
+        try:
+            r = get_redis()
+            # `failure_count` is already authoritative (HINCRBY); rewriting it here is
+            # redundant but cheap and keeps `_hset_state` semantics simple.
+            await cast(
+                Any,
+                r.hset(
+                    self._key(),
+                    mapping={
+                        "state": self._local_state,
+                        "last_failure_time": str(self._local_last_failure),
+                    },
+                ),
+            )
+            await cast(Any, r.expire(self._key(), _REDIS_TTL_SECONDS))
+        except Exception:
+            logger.debug("CB %s: write-to-redis failed", self.name)
+
         if should_open and previously != "open":
             logger.warning(
                 "Circuit breaker '%s' opened after %d failures",

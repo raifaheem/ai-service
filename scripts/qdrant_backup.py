@@ -125,9 +125,22 @@ async def run_backup(
     client = AsyncQdrantClient(url=qdrant_url, timeout=60.0)
     try:
         # Fail fast — a missing collection is an ops error, not a silent noop.
-        await client.get_collection(collection)
+        info = await client.get_collection(collection)
 
-        logger.info("Creating snapshot for collection '%s'", collection)
+        # L5: skip the daily snapshot when the collection has zero points.
+        # Otherwise the retention window fills up with 7 useless empty
+        # snapshots, masking the gap until someone notices the KB never got
+        # seeded. Loud log + clean exit is the right signal here.
+        points_count = getattr(info, "points_count", None) or 0
+        if points_count == 0:
+            logger.warning(
+                "Collection '%s' has 0 points; skipping snapshot creation. "
+                "Seed the knowledge base first or remove this from the backup schedule.",
+                collection,
+            )
+            return 0
+
+        logger.info("Creating snapshot for collection '%s' (%d points)", collection, points_count)
         created = await client.create_snapshot(collection_name=collection)
         if created is None or not getattr(created, "name", None):
             logger.error("Qdrant returned no snapshot description; aborting")

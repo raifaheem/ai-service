@@ -70,17 +70,89 @@ class TestOwnership:
         assert await triage_memory.get_owner(s.session_id) == "u-42"
 
     async def test_owner_is_first_writer_wins(self, stored_redis):
-        """The plan calls out the same SET NX pattern as chat conversations:
-        a second writer must NOT steal ownership even if they save another
-        session object under the same id (impossible in practice, but guard
-        the primitive)."""
+        """A6: the CAS now rejects an attacker who tries to save a fresh session
+        under an existing id (their version=0 vs the persisted version=1).
+        Independently the SET NX on the owner key would also keep the original
+        owner — but with CAS we never even reach that line, so we both expect
+        the exception and confirm the owner remained unchanged."""
+        from app.services.triage import TriageConcurrentUpdate
+
         s = _build_session()
         await triage_memory.save_session(s)
-        # Simulate a separate save using a different user_id via the same id.
         attacker = TriageSession.new(user_id="evil", locale="ru", region=None)
-        attacker.session_id = s.session_id
-        await triage_memory.save_session(attacker)
+        attacker.session_id = s.session_id  # version still 0
+        with pytest.raises(TriageConcurrentUpdate):
+            await triage_memory.save_session(attacker)
         assert await triage_memory.get_owner(s.session_id) == "u-42"
+
+
+class TestVersionCAS:
+    """A6: save_session enforces compare-and-swap on the version field.
+
+    Without CAS, two concurrent advances on the same session_id would silently
+    overwrite each other. With CAS the second writer raises
+    TriageConcurrentUpdate; the router translates that into 409.
+    """
+
+    async def test_save_increments_version(self, stored_redis):
+        s = _build_session()
+        assert s.version == 0
+        await triage_memory.save_session(s)
+        assert s.version == 1
+        # And persisted record carries the same version.
+        loaded = await triage_memory.load_session(s.session_id)
+        assert loaded is not None
+        assert loaded.version == 1
+
+    async def test_concurrent_save_rejects_stale_version(self, stored_redis):
+        from app.services.triage import TriageConcurrentUpdate
+
+        s = _build_session()
+        await triage_memory.save_session(s)  # version: 0 -> 1
+
+        # Simulate a second worker that loaded the session at version=1, but a
+        # racing first worker wrote first and bumped to 2 in the meantime.
+        racer = await triage_memory.load_session(s.session_id)
+        assert racer is not None  # version=1
+        s.answers["primary_complaint"] = "first writer"
+        await triage_memory.save_session(s)  # 1 -> 2
+
+        # Now `racer.version == 1` but the persisted version is 2.
+        racer.answers["primary_complaint"] = "second writer"
+        with pytest.raises(TriageConcurrentUpdate):
+            await triage_memory.save_session(racer)
+
+        loaded = await triage_memory.load_session(s.session_id)
+        assert loaded is not None
+        assert loaded.answers["primary_complaint"] == "first writer"
+
+    async def test_legacy_record_without_version_loads_as_zero(self, stored_redis):
+        """Pre-A6 records have no `version` field — they must still load."""
+        import json
+
+        legacy_payload = {
+            "session_id": "legacy-1",
+            "user_id": "u-1",
+            "locale": "ru",
+            "region": None,
+            "state": "in_progress",
+            "current_step_index": 0,
+            "answers": {},
+            "unparsed_steps": [],
+            "clarification_counts": {},
+            "red_flags": [],
+            "created_at": 1.0,
+            "updated_at": 1.0,
+            # NO `version` field
+        }
+        await stored_redis.set(
+            "healthai:triage:legacy-1:state",
+            json.dumps(legacy_payload),
+            ex=3600,
+        )
+        loaded = await triage_memory.load_session("legacy-1")
+        assert loaded is not None
+        assert loaded.version == 0
 
 
 class TestDelete:

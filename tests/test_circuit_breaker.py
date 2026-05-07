@@ -1,9 +1,11 @@
-"""Tests for the distributed circuit breaker (B.1).
+"""Tests for the distributed circuit breaker (B.1, A3).
 
 Exercises the Redis-backed state transitions and cross-instance sharing.
+After A3 the breaker uses HINCRBY/HSET so failure increments are atomic
+across racing workers; the fake below tracks per-key hash maps.
 """
 
-import json
+import asyncio
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -11,21 +13,42 @@ from app.services.circuit_breaker import DEGRADED_MESSAGES, DistributedCircuitBr
 
 
 class _AsyncRedisFake:
-    """Tiny async-Redis stand-in; only get/set/delete used by the breaker."""
+    """Tiny async-Redis stand-in covering the hash ops the breaker uses.
+
+    Each key maps to a string→str dict (matches Redis semantics). HINCRBY is
+    serialized through an asyncio.Lock so the race-test below can exercise
+    real async-level interleaving without us pretending to be atomic.
+    """
 
     def __init__(self) -> None:
-        self.store: dict[str, str] = {}
+        self.store: dict[str, dict[str, str]] = {}
+        self._lock = asyncio.Lock()
 
-    async def get(self, key):
-        return self.store.get(key)
+    async def hgetall(self, key):
+        return dict(self.store.get(key, {}))
 
-    async def set(self, key, value, ex=None):
-        self.store[key] = value
-        return True
+    async def hset(self, key, mapping=None, **kwargs):
+        if mapping is None:
+            mapping = kwargs
+        self.store.setdefault(key, {}).update({k: str(v) for k, v in mapping.items()})
+        return len(mapping)
+
+    async def hincrby(self, key, field, amount=1):
+        # Atomic increment under our local lock — without this two coroutines
+        # both reading `field` before either writes would each return amount,
+        # which is exactly the bug A3 fixes in the real code.
+        async with self._lock:
+            slot = self.store.setdefault(key, {})
+            current = int(slot.get(field, "0"))
+            current += amount
+            slot[field] = str(current)
+            return current
+
+    async def expire(self, key, ttl):
+        return key in self.store
 
     async def delete(self, key):
-        self.store.pop(key, None)
-        return 1
+        return 1 if self.store.pop(key, None) is not None else 0
 
 
 def _patch_redis(fake: _AsyncRedisFake):
@@ -79,9 +102,11 @@ class TestCircuitBreakerStates:
             # Rewrite persisted state so last_failure_time is 2 s in the past; force a
             # resync on the next `state` read.
             cb._last_sync = 0.0
-            fake.store[cb._key()] = json.dumps(
-                {"state": "open", "failure_count": 1, "last_failure_time": time.time() - 2}
-            )
+            fake.store[cb._key()] = {
+                "state": "open",
+                "failure_count": "1",
+                "last_failure_time": str(time.time() - 2),
+            }
             assert await cb.state == "half_open"
             assert await cb.is_available is True
 
@@ -141,6 +166,24 @@ class TestDistributedState:
             assert await cb_b.state == "open"
             assert await cb_b.is_available is False
 
+    async def test_concurrent_failures_increment_atomically(self):
+        """Two workers recording simultaneous failures must produce count=2, not 1.
+
+        Pre-A3 each instance did `count = local + 1; SET payload`. Two workers
+        racing on the same key both wrote 1, losing one failure. With HINCRBY
+        the count is Redis-side authoritative.
+        """
+        fake = _AsyncRedisFake()
+        cb_a = DistributedCircuitBreaker("race", failure_threshold=10, local_cache_ttl=0.0)
+        cb_b = DistributedCircuitBreaker("race", failure_threshold=10, local_cache_ttl=0.0)
+
+        with _patch_redis(fake):
+            await asyncio.gather(cb_a.record_failure(), cb_b.record_failure())
+
+        # The HASH stores the merged count.
+        stored = fake.store[cb_a._key()]
+        assert int(stored["failure_count"]) == 2
+
 
 class TestRedisFailureFallback:
     """If Redis blips, the breaker must not itself become an outage source."""
@@ -149,7 +192,7 @@ class TestRedisFailureFallback:
         cb = DistributedCircuitBreaker("test", local_cache_ttl=0.0)
 
         failing_redis = AsyncMock()
-        failing_redis.get = AsyncMock(side_effect=ConnectionError("redis down"))
+        failing_redis.hgetall = AsyncMock(side_effect=ConnectionError("redis down"))
 
         with patch("app.services.circuit_breaker.get_redis", return_value=failing_redis):
             # Fresh breaker + Redis errors → breaker stays closed, service keeps serving.
@@ -160,8 +203,10 @@ class TestRedisFailureFallback:
         cb = DistributedCircuitBreaker("test", local_cache_ttl=0.0)
 
         failing_redis = AsyncMock()
-        failing_redis.get = AsyncMock(return_value=None)
-        failing_redis.set = AsyncMock(side_effect=ConnectionError("redis down"))
+        failing_redis.hgetall = AsyncMock(return_value={})
+        failing_redis.hset = AsyncMock(side_effect=ConnectionError("redis down"))
+        failing_redis.hincrby = AsyncMock(side_effect=ConnectionError("redis down"))
+        failing_redis.expire = AsyncMock(side_effect=ConnectionError("redis down"))
 
         with patch("app.services.circuit_breaker.get_redis", return_value=failing_redis):
             # record_* must swallow Redis errors; the caller's request continues.
@@ -174,15 +219,18 @@ class TestLocalCacheTtl:
 
     async def test_cache_prevents_excessive_reads(self):
         fake = _AsyncRedisFake()
-        get_calls = {"n": 0}
+        hgetall_calls = {"n": 0}
 
         class _CountingRedis:
-            async def get(self, key):
-                get_calls["n"] += 1
-                return fake.store.get(key)
+            async def hgetall(self, key):
+                hgetall_calls["n"] += 1
+                return await fake.hgetall(key)
 
-            async def set(self, key, value, ex=None):
-                return await fake.set(key, value, ex=ex)
+            async def hset(self, key, mapping=None, **kwargs):
+                return await fake.hset(key, mapping=mapping, **kwargs)
+
+            async def expire(self, key, ttl):
+                return await fake.expire(key, ttl)
 
         counting = _CountingRedis()
         cb = DistributedCircuitBreaker("test", local_cache_ttl=5.0)
@@ -193,7 +241,7 @@ class TestLocalCacheTtl:
             await cb.state
 
         # One sync for the first read; next two are served from local cache.
-        assert get_calls["n"] == 1
+        assert hgetall_calls["n"] == 1
 
 
 class TestDegradedMessages:

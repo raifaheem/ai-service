@@ -127,15 +127,18 @@ class TestParseArgs:
 # --------------- run_backup (integration with mocked client) ---------------
 
 
-def _mock_client_factory(*, snapshots_before: list[SimpleNamespace], created_name: str):
+def _mock_client_factory(*, snapshots_before: list[SimpleNamespace], created_name: str, points_count: int = 100):
     """Build a MagicMock standing in for AsyncQdrantClient.
 
     `snapshots_before` is what list_snapshots returns AFTER create_snapshot is
     called — i.e. the full set including the newly created one. Tests can
-    wire any retention scenario this way.
+    wire any retention scenario this way. `points_count=0` lets you exercise
+    the L5 empty-collection skip path.
     """
     client = MagicMock()
-    client.get_collection = AsyncMock(return_value=SimpleNamespace(status="green"))
+    client.get_collection = AsyncMock(
+        return_value=SimpleNamespace(status="green", points_count=points_count)
+    )
     client.create_snapshot = AsyncMock(
         return_value=SimpleNamespace(name=created_name, creation_time="2026-04-21T00:00:00Z")
     )
@@ -214,9 +217,33 @@ async def test_run_backup_skips_delete_errors_gracefully(caplog):
 
 
 @pytest.mark.asyncio
+async def test_run_backup_skips_when_collection_empty(caplog):
+    """L5: an empty collection (0 points) shouldn't yield a snapshot — the
+    retention window would otherwise fill with 7 useless empty files and
+    mask the gap until someone notices the KB never got seeded."""
+    import logging
+
+    client = _mock_client_factory(snapshots_before=[], created_name="never-created", points_count=0)
+
+    caplog.set_level(logging.WARNING, logger="qdrant_backup")
+    with patch("qdrant_backup.AsyncQdrantClient", return_value=client):
+        rc = await run_backup(
+            qdrant_url="http://q:6333",
+            collection="medical_articles",
+            keep_last=7,
+            download_to=None,
+        )
+
+    assert rc == 0  # not an error — just a no-op with a warning
+    client.create_snapshot.assert_not_awaited()
+    client.list_snapshots.assert_not_awaited()
+    assert any("0 points" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_run_backup_returns_error_when_snapshot_has_no_name():
     client = MagicMock()
-    client.get_collection = AsyncMock(return_value=SimpleNamespace())
+    client.get_collection = AsyncMock(return_value=SimpleNamespace(points_count=10))
     client.create_snapshot = AsyncMock(return_value=SimpleNamespace(name=None))
     client.list_snapshots = AsyncMock(return_value=[])
     client.delete_snapshot = AsyncMock()

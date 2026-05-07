@@ -1,56 +1,74 @@
-"""Security tests: rate limiting behavior."""
-from unittest.mock import AsyncMock, MagicMock, patch
+"""End-to-end security smoke for the rate limiter.
 
-import pytest
-from httpx import AsyncClient, ASGITransport
+M9 trim: this file used to patch `enforce_rate_limit` to throw 429 and assert
+the route surfaced 429 — that proves FastAPI re-raises HTTPException, not that
+the limiter works. The real sliding-window logic is unit-tested in
+[tests/test_rate_limit.py](tests/test_rate_limit.py); here we keep one
+end-to-end test that hits the real limiter through the chat router so a
+regression in the integration wiring (rate_limit_id derivation, header parsing,
+fail-closed behaviour) doesn't slip through.
+"""
+
+from unittest.mock import AsyncMock, patch
+
+from httpx import ASGITransport, AsyncClient
+
+from app.config import settings
 
 
-class TestRateLimiting:
-    async def test_rate_limit_exceeded(self, mock_redis, mock_qdrant):
-        """When rate limit is exceeded, should return 429."""
-        # Make enforce_rate_limit raise 429
-        from fastapi import HTTPException
+async def test_real_limiter_returns_429_after_budget(mock_redis, mock_qdrant):
+    """Send `RATE_LIMIT_PER_MINUTE + RATE_LIMIT_BURST + 1` requests; the last is 429.
 
-        async def rate_limit_exceeded(identifier):
-            raise HTTPException(status_code=429, detail="Too many requests")
+    The limiter writes to a Redis zset (sliding window); our `mock_redis`
+    `_FakeRedis` already implements zadd/zcard/zremrangebyscore. We mock out
+    the LLM and RAG paths so requests return 200 quickly until the budget runs
+    out.
+    """
+    from app.services.intent import IntentResult
 
-        with patch("app.services.redis_client._redis", mock_redis), \
-             patch("app.services.redis_client.get_redis", return_value=mock_redis), \
-             patch("app.services.vector_client._qdrant", mock_qdrant), \
-             patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
-             patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock), \
-             patch("app.routers.chat.enforce_rate_limit", side_effect=rate_limit_exceeded):
+    mock_intent = IntentResult(
+        category="general_health",
+        confidence=0.9,
+        requires_followup=False,
+        detected_entities={},
+        risk_level="low",
+    )
 
-            from app.main import app
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
+    cap = int(settings.rate_limit_per_minute) + int(settings.rate_limit_burst)
+
+    with (
+        patch("app.services.redis_client._redis", mock_redis),
+        patch("app.services.redis_client.get_redis", return_value=mock_redis),
+        patch("app.services.rate_limit.get_redis", return_value=mock_redis),
+        patch("app.services.memory.get_redis", return_value=mock_redis),
+        patch("app.services.vector_client._qdrant", mock_qdrant),
+        patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
+        patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
+        patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
+        patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
+        patch(
+            "app.routers.chat.generate_health_answer",
+            new_callable=AsyncMock,
+            return_value="ok",
+        ),
+    ):
+        from app.main import app
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # First `cap` requests succeed.
+            for i in range(cap):
                 resp = await client.post(
                     "/v1/chat",
-                    json={"message": "Hello"},
-                    headers={"X-Service-Token": "test-token", "X-User-Id": "user-1"},
+                    json={"message": f"req-{i}", "locale": "en"},
+                    headers={"X-Service-Token": "test-token", "X-User-Id": "rl-user"},
                 )
-        assert resp.status_code == 429
+                assert resp.status_code == 200, f"request {i} returned {resp.status_code}: {resp.text}"
 
-    async def test_rate_limit_exceeded_stream(self, mock_redis, mock_qdrant):
-        """Rate limit on streaming endpoint too."""
-        from fastapi import HTTPException
-
-        async def rate_limit_exceeded(identifier):
-            raise HTTPException(status_code=429, detail="Too many requests")
-
-        with patch("app.services.redis_client._redis", mock_redis), \
-             patch("app.services.redis_client.get_redis", return_value=mock_redis), \
-             patch("app.services.vector_client._qdrant", mock_qdrant), \
-             patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
-             patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock), \
-             patch("app.routers.chat.enforce_rate_limit", side_effect=rate_limit_exceeded):
-
-            from app.main import app
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post(
-                    "/v1/chat/stream",
-                    json={"message": "Hello"},
-                    headers={"X-Service-Token": "test-token", "X-User-Id": "user-1"},
-                )
+            # The next one trips the limiter.
+            resp = await client.post(
+                "/v1/chat",
+                json={"message": "over-the-edge", "locale": "en"},
+                headers={"X-Service-Token": "test-token", "X-User-Id": "rl-user"},
+            )
         assert resp.status_code == 429

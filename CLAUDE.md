@@ -42,19 +42,20 @@ Server-driven symptom intake — a fixed 10-step form ([app/services/triage.py](
 
 ### `/v1/chat` + `/v1/chat/stream` pipeline ([app/routers/chat.py](app/routers/chat.py))
 
-Same pipeline, JSON vs SSE (`meta`/`delta`/`final`/`error`):
-1. Auth ([security.py](app/security.py)) — JWT RS256 or `X-Service-Token` + `X-User-Id`.
-2. Rate limit ([rate_limit.py](app/services/rate_limit.py)) — per-user per-minute via Redis; cap = `RATE_LIMIT_PER_MINUTE + RATE_LIMIT_BURST`.
-3. Prompt-injection guard ([safety.py](app/services/safety.py)) — regex; refusal skips LLM.
-4. Owner check — `conversation_id` owner in Redis must match user_id (403 else).
-5. History — from body (last 8 turns) or Redis.
-6. Intent ([intent.py](app/services/intent.py)) — cheap LLM call, cached 300s. `off_topic` with confidence ≥0.7 short-circuits.
-7. Summarization ([summarizer.py](app/services/summarizer.py)) — >8 turns → summary + last 6 (summary *replaces* older history, doesn't prepend).
-8. RAG ([rag.py](app/services/rag.py), [vector_store.py](app/services/vector_store.py)) — cached embedding, Qdrant w/ language filter, drop below `RAG_SCORE_THRESHOLD`, cross-language fallback. **Fails open**.
-9. Circuit breaker ([circuit_breaker.py](app/services/circuit_breaker.py)) — **fails closed**: opens after 3 OpenAI failures/60s → 503.
-10. LLM ([llm.py](app/services/llm.py)) — system + locale addon (via `intent.addon_name`) + summary + RAG + history. Temperature from `CATEGORY_TO_TEMPERATURE`.
-11. Content filter ([content_filter.py](app/services/content_filter.py)) — softens diagnoses, appends doctor note near drug dosages.
-12. Persist — Redis `RPUSH`/`LTRIM` to `REDIS_MAX_TURNS`, owner via `SET NX` (first writer wins).
+Same pipeline, JSON vs SSE (`meta`/`delta`/`final`/`error`; every SSE event carries `request_id`):
+1. Auth ([security.py](app/security.py)) — JWT RS256 (with optional `aud`/`iss` pinning) or `X-Service-Token` + `X-User-Id`.
+2. **Idempotency check (C.4 + A5)** — when `idempotency_key` is supplied, fingerprint = `sha256(message + conversation_id + locale + region)`. Match → return cached response (and emit `chat.answer` audit with `cached=true`). Different fingerprint under the same key → **409 Conflict**.
+3. Rate limit ([rate_limit.py](app/services/rate_limit.py)) — per-user sliding window via Redis zset; cap = `RATE_LIMIT_PER_MINUTE + RATE_LIMIT_BURST`.
+4. Owner check — `conversation_id` owner in Redis must match user_id (403 else). **Fails closed.**
+5. Prompt-injection guard ([safety.py](app/services/safety.py)) — regex; refusal skips LLM and emits `chat.injection_blocked` audit.
+6. History — from body (forwarded as-is) or Redis (up to `REDIS_MAX_TURNS`). Summarizer downstream caps it.
+7. Intent ([intent.py](app/services/intent.py)) — cheap LLM call (tracing span `intent.classify`), cached 300s. `off_topic` with confidence ≥0.7 short-circuits.
+8. Summarization ([summarizer.py](app/services/summarizer.py)) — >8 turns → summary + last 6 (summary *replaces* older history, doesn't prepend).
+9. RAG ([rag.py](app/services/rag.py), [vector_store.py](app/services/vector_store.py), tracing span `rag.build`) — cached embedding, Qdrant w/ language filter, drop below `RAG_SCORE_THRESHOLD`, cross-language fallback (chunks gain `is_fallback=true`). **Fails open**.
+10. Circuit breakers ([circuit_breaker.py](app/services/circuit_breaker.py), HASH-backed atomic state via HINCRBY/HSET) — `openai_breaker` wraps **every** OpenAI call (intent, summarizer, RAG embed, LLM, triage, article analyzer) via [openai_call_guard.py](app/services/openai_call_guard.py); `qdrant_breaker` wraps every search/upsert via [breaker_guard.py](app/services/breaker_guard.py). **Both fail closed**: open after 3 failures/60s → 503 with degraded message.
+11. LLM ([llm.py](app/services/llm.py), tracing span `llm.generate`) — system + locale addon (via `intent.addon_name`) + summary + RAG + history. Temperature from `CATEGORY_TO_TEMPERATURE`.
+12. Content filter ([content_filter.py](app/services/content_filter.py)) — softens diagnoses, appends doctor note near drug dosages.
+13. Persist + audit — Redis `RPUSH`/`LTRIM` to `REDIS_MAX_TURNS`, owner via `SET NX` (first writer wins). Every successful answer emits a `chat.answer` audit event ([app/services/audit.py](app/services/audit.py)).
 
 ### Singletons & lifespan
 
@@ -62,14 +63,27 @@ Same pipeline, JSON vs SSE (`meta`/`delta`/`final`/`error`):
 
 ### Redis keys (prefix `REDIS_PREFIX`, default `healthai`)
 
-`conv:{id}:turns|owner|summary|meta`, `rl:{user_id}:{minute}`, `emb:{md5}`, `intent:{md5}`.
+- `conv:{id}:{turns,owner,summary,summary_meta,meta}` — chat state. `summary_meta` is JSON `{turn_count_at_summary}` so resummarization fires after `RESUMMARIZE_AFTER_N_TURNS` new turns instead of freezing at first summary.
+- `rl:{user_id}` — sliding-window rate limiter (Redis zset of `epoch_ms:uuid` members, 60s TTL on set).
+- `emb:{model}:{md5}` — embedding cache. **Includes the model in the key** — flipping `OPENAI_EMBEDDING_MODEL` invalidates the cache automatically.
+- `intent:v2:{md5}` — intent classifier cache. The `v2` prefix lets us bump the cache when classify-prompt or schema changes.
+- `idem:{user_id}:{key}` — idempotency cache. Stores `{"fingerprint": "...", "response": {...}}`; 10-min TTL. Mismatched fingerprint under the same key → 409.
+- `triage:{session_id}:{state,owner}` — triage state (D.3.a). State is a JSON blob carrying a `version` field for optimistic CAS in `save_session`.
+- `cb:{name}` — distributed circuit-breaker HASH `{state, failure_count, last_failure_time}`. `name` is `openai` or `qdrant`. 5-min TTL on writes.
+- `audit` — Redis Stream of audit events (MAXLEN ~1M). Identifiers + metadata only, never message content.
 
 ### Config knobs ([app/config.py](app/config.py), pydantic-settings)
 
+- `APP_ENV=production` — disables `/docs`+`/redoc`, requires `JWT_AUDIENCE`+`JWT_ISSUER` when `JWT_PUBLIC_KEY` is set, rejects `ALLOWED_ORIGINS=*` outright (raises at boot via `_validate_prod_safety`), rejects `redis://` URLs without password and placeholder `SERVICE_TOKEN`s.
+- `ENABLE_DEV_ROUTES` — mounts `/v1/rag/*` (keep false in prod; production-safety rejects true).
 - `RAG_SCORE_THRESHOLD` (0.35) — too high = "RAG silently went cold".
-- `OPENAI_MAX_RETRIES` (3), `OPENAI_TIMEOUT_SECONDS` (30).
-- `APP_ENV=production` — disables `/docs`+`/redoc`, rejects `ALLOWED_ORIGINS=*` w/ credentials.
-- `ENABLE_DEV_ROUTES` — mounts `/v1/rag/*` (keep false in prod).
+- `OPENAI_MAX_RETRIES` (3), `OPENAI_TIMEOUT_SECONDS` (30), `MAX_RESPONSE_TOKENS` (1000).
+- `OPENAI_EMBEDDING_MODEL` — flipping this invalidates the embedding cache automatically (model is part of the cache key).
+- `EMBEDDING_CACHE_TTL` (86400 / 24h).
+- `JWT_PUBLIC_KEY` — RS256 PEM. Algorithm is **hardcoded** to RS256 (no `JWT_ALG` knob anymore — defense against an HS256-with-pubkey-as-secret attack).
+- `JWT_AUDIENCE`, `JWT_ISSUER` — optional in dev, required in prod when `JWT_PUBLIC_KEY` is set; pinned in `jwt.decode`.
+- `QDRANT_TIMEOUT` (10).
+- `REDIS_MAX_CONNECTIONS` (20), `REDIS_SOCKET_TIMEOUT` (5).
 - `LOG_FORMAT=json|text`.
 
 ## Development Patterns
@@ -91,12 +105,15 @@ Curated Markdown under [data/knowledge_base/](data/knowledge_base/) + [manifest.
 - Prod = **overlay**: `docker-compose.yml` + `docker-compose.prod.yml` (not the prod file alone). `.env.production` is deploy-host only (gitignored).
 - Resource budget in prod overlay: redis 0.5 CPU / 512M, qdrant 1.5 CPU / 2G, ai 2.0 CPU / 1G. Revisit when the KB grows past ~100k chunks (qdrant memory is the first thing to run out).
 - `/health` → `ok|degraded` (Redis + Qdrant + circuit state); wire to liveness probes.
-- `/metrics` is unauthenticated — keep on private network.
+- `/metrics` is **authenticated** via `X-Service-Token` or JWT (see [app/main.py](app/main.py) `/metrics` endpoint). In-cluster Prometheus scrapers must supply the token from a Kubernetes secret; from-internet scrapers are still rejected at the auth layer.
 - Release: push `vX.Y.Z` tag → [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds + pushes to GHCR. CI = [.github/workflows/ci.yml](.github/workflows/ci.yml) (test/lint/typecheck/security).
+- **On-call runbook:** [docs/RUNBOOK.md](docs/RUNBOOK.md) — common incidents (OpenAI down, Redis OOM, Qdrant restore, rate-limit storm, JWT rotation, startup failures).
 
-### Qdrant backup
+### Backup policy
 
-Collection state is the only non-regenerable asset — Redis holds ephemeral history that a single client reset can recover, but Qdrant holds the embedded knowledge base. Snapshot via the `backup` profile:
+**Redis is intentionally ephemeral.** Conversation turns, rate-limit counters, summary metadata, idempotency cache, triage sessions, and circuit-breaker state all live there with TTL. AOF (`docker-compose.yml`) protects against container restart but not host loss; we accept that exposure because every Redis-resident value is recoverable: a stuck client starts a new conversation, rate-limit counters expire in 60s, triage sessions abandon naturally on TTL. If you change this stance (e.g. compliance retention requirements), add a `redis-backup` compose profile mirroring the Qdrant one rather than relying on AOF alone.
+
+**Qdrant is the only non-regenerable asset** — it holds the embedded knowledge base. Snapshot via the `backup` profile:
 
 ```bash
 docker compose --profile backup run --rm qdrant-backup

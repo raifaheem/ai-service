@@ -28,9 +28,10 @@ tests
 *.md
 docs
 
-# Knowledge base + seed scripts — used offline, never from the runtime image
+# Knowledge base files are mounted into the seed service at runtime, not baked
+# into the image. Seed + backup scripts are copied in so the compose `seed` /
+# `backup` profiles can invoke them.
 data
-scripts
 
 # OS junk
 .DS_Store

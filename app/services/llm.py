@@ -1,3 +1,13 @@
+"""LLM answer generation — sync (`generate_health_answer`) and SSE-stream
+(`stream_health_answer`) flavours.
+
+Both build the same prompt structure (system + locale addon + RAG block +
+summary + history + user block) and call `client.chat.completions.create`
+through `openai_call_guard`, so failures are recorded into the OpenAI
+circuit breaker. The streaming variant yields `{"type": "delta"|"usage"}`
+events that the chat router translates into SSE frames.
+"""
+
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -6,6 +16,7 @@ from typing import Any, cast
 from ..config import settings
 from ..metrics import metrics
 from .i18n import get_rag_instruction, get_system_prompt, normalize_locale
+from .openai_call_guard import openai_call_guard
 from .openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -63,6 +74,7 @@ async def generate_health_answer(
     temperature: float = 0.4,
     summary: str | None = None,
 ) -> str:
+    """One-shot answer generation. Returns the trimmed answer string."""
     system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
         user_message=user_message,
@@ -78,12 +90,13 @@ async def generate_health_answer(
     messages.append({"role": "user", "content": user_block})
 
     start = time.perf_counter()
-    resp = await client.chat.completions.create(
-        model=settings.openai_model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=settings.max_response_tokens,
-    )
+    async with openai_call_guard():
+        resp = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=settings.max_response_tokens,
+        )
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
 
     usage = resp.usage
@@ -114,6 +127,9 @@ async def stream_health_answer(
     temperature: float = 0.4,
     summary: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
+    """Yield `{"type": "delta", "text": ...}` per token then a final
+    `{"type": "usage", "usage": ..., "model": ..., "finish_reason": ...}`
+    after OpenAI emits its terminating chunk. Caller turns these into SSE."""
     system_prompt = _build_system_prompt(locale=locale, rag_context=rag_context, addon_prompt=addon_prompt)
     user_block = _build_user_block(
         user_message=user_message,
@@ -133,34 +149,37 @@ async def stream_health_answer(
     messages.append({"role": "user", "content": user_block})
 
     start = time.perf_counter()
-    stream = await client.chat.completions.create(
-        model=settings.openai_model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=settings.max_response_tokens,
-        stream=True,
-        stream_options=cast(Any, {"include_usage": True}),
-    )
+    # The guard wraps both the initial `create()` and the entire iteration so a
+    # failure mid-stream still records into the breaker.
+    async with openai_call_guard():
+        stream = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=settings.max_response_tokens,
+            stream=True,
+            stream_options=cast(Any, {"include_usage": True}),
+        )
 
-    async for chunk in stream:
-        if model_name is None and hasattr(chunk, "model"):
-            model_name = getattr(chunk, "model", None)
+        async for chunk in stream:
+            if model_name is None and hasattr(chunk, "model"):
+                model_name = getattr(chunk, "model", None)
 
-        if getattr(chunk, "choices", None):
-            choice0 = chunk.choices[0]
-            if getattr(choice0, "finish_reason", None):
-                finish_reason = choice0.finish_reason
-            delta = getattr(getattr(choice0, "delta", None), "content", None)
-            if delta:
-                yield {"type": "delta", "text": delta}
+            if getattr(chunk, "choices", None):
+                choice0 = chunk.choices[0]
+                if getattr(choice0, "finish_reason", None):
+                    finish_reason = choice0.finish_reason
+                delta = getattr(getattr(choice0, "delta", None), "content", None)
+                if delta:
+                    yield {"type": "delta", "text": delta}
 
-        if getattr(chunk, "usage", None):
-            u = chunk.usage
-            usage_dict = {
-                "prompt_tokens": getattr(u, "prompt_tokens", None),
-                "completion_tokens": getattr(u, "completion_tokens", None),
-                "total_tokens": getattr(u, "total_tokens", None),
-            }
+            if getattr(chunk, "usage", None):
+                u = chunk.usage
+                usage_dict = {
+                    "prompt_tokens": getattr(u, "prompt_tokens", None),
+                    "completion_tokens": getattr(u, "completion_tokens", None),
+                    "total_tokens": getattr(u, "total_tokens", None),
+                }
 
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
 

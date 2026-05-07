@@ -30,6 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /install /usr/local
 COPY app ./app
+COPY scripts ./scripts
+COPY gunicorn_conf.py ./gunicorn_conf.py
 
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser \
     && chown -R appuser:appgroup /app
@@ -47,12 +49,7 @@ EXPOSE 8001
 
 ENV GUNICORN_WORKERS=4
 
-# --graceful-timeout 30 matches SHUTDOWN_TIMEOUT in app/lifecycle.py so SSE streams drain cleanly.
-CMD gunicorn app.main:app \
-     -k uvicorn.workers.UvicornWorker \
-     -w ${GUNICORN_WORKERS} \
-     --bind 0.0.0.0:8001 \
-     --timeout 120 \
-     --graceful-timeout 30 \
-     --access-logfile - \
-     --error-logfile -
+# All worker tuning lives in gunicorn_conf.py (M6/M7): max-requests + jitter
+# for memory hygiene, child_exit hook for prometheus_client multiproc cleanup,
+# preload_app for shared module-level imports across workers.
+CMD ["gunicorn", "app.main:app", "-c", "gunicorn_conf.py"]

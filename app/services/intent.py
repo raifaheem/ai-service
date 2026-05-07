@@ -7,6 +7,7 @@ from typing import Any, cast
 
 from ..config import settings
 from ..metrics import metrics
+from .openai_call_guard import OpenAIUnavailable, openai_call_guard
 from .openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ VALID_CATEGORIES = {
     "emergency",
     "general_health",
     "off_topic",
+    "sensitive_blocked",
 }
 
 VALID_RISK_LEVELS = {"low", "medium", "high", "emergency"}
@@ -35,6 +37,7 @@ CATEGORY_TO_ADDON = {
     "emergency": "emergency",
     "general_health": None,
     "off_topic": None,
+    "sensitive_blocked": None,
 }
 
 CATEGORY_TO_TEMPERATURE = {
@@ -47,11 +50,13 @@ CATEGORY_TO_TEMPERATURE = {
     "fitness": 0.5,
     "sleep": 0.5,
     "off_topic": 0.4,
+    # Unused — sensitive_blocked short-circuits before LLM generation.
+    "sensitive_blocked": 0.0,
 }
 
 CLASSIFY_SYSTEM_PROMPT = """You are a health query classifier. Analyze the user's message and return a JSON object with these fields:
 
-- "category": one of: symptom_check, lifestyle, nutrition, mental_health, fitness, sleep, emergency, general_health, off_topic
+- "category": one of: symptom_check, lifestyle, nutrition, mental_health, fitness, sleep, emergency, general_health, off_topic, sensitive_blocked
 - "confidence": float 0.0-1.0
 - "risk_level": one of: low, medium, high, emergency
 - "requires_followup": boolean — true if the message lacks detail for a useful answer
@@ -66,13 +71,23 @@ Classification rules:
 - "fitness": exercise, training, physical activity
 - "sleep": sleep quality, insomnia, sleep schedule
 - "general_health": general medical questions, prevention, checkups
-- "off_topic": not related to health at all
+- "off_topic": not related to health at all (e.g. weather, sports scores, programming help)
+- "sensitive_blocked": user is asking about sexually-explicit content (INCLUDING clinical questions about sexual organs, STIs/STDs, sexual function), profanity, recreational drug use (non-medication), or graphic violence/gore. Self-harm and suicidal ideation are NOT sensitive_blocked — they belong in "emergency" or "mental_health".
+
+Examples:
+- "что такое ИППП?" -> sensitive_blocked
+- "симптомы эректильной дисфункции" -> sensitive_blocked
+- "эффекты кокаина" -> sensitive_blocked
+- "у меня суицидальные мысли" -> emergency (NOT sensitive_blocked)
+- "как пережить стресс" -> mental_health
+- "у меня болит голова" -> symptom_check
+- "как принимать ибупрофен" -> general_health (medication, not recreational drug)
 
 Risk levels:
 - "emergency": life-threatening symptoms
 - "high": symptoms that need prompt medical attention (persistent severe pain, high fever, etc.)
 - "medium": symptoms worth monitoring or seeing a doctor about
-- "low": general wellness questions, lifestyle
+- "low": general wellness questions, lifestyle, off-topic, or sensitive_blocked
 
 Return ONLY valid JSON, no markdown formatting."""
 
@@ -104,7 +119,7 @@ def _default_intent() -> IntentResult:
     )
 
 
-_INTENT_CACHE_VERSION = "v2"
+_INTENT_CACHE_VERSION = "v3"
 
 
 def _build_cache_key(message: str, history_tail: list[dict], locale: str) -> str:
@@ -177,13 +192,14 @@ async def classify_intent(
 
     try:
         _start = time.perf_counter()
-        resp = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=300,
-            response_format=cast(Any, {"type": "json_object"}),
-        )
+        async with openai_call_guard():
+            resp = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=300,
+                response_format=cast(Any, {"type": "json_object"}),
+            )
         _duration_ms = round((time.perf_counter() - _start) * 1000, 1)
         _usage = resp.usage
         if _usage:
@@ -220,6 +236,9 @@ async def classify_intent(
             risk_level=risk_level,
         )
 
+    except OpenAIUnavailable:
+        logger.warning("Intent classification skipped: OpenAI breaker is open")
+        result = _default_intent()
     except Exception:
         logger.exception("Intent classification failed, using default")
         result = _default_intent()

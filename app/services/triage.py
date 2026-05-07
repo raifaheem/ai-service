@@ -36,6 +36,7 @@ from ..schemas_triage import (
     TriageReport,
 )
 from ..services.i18n import normalize_locale
+from ..services.openai_call_guard import openai_call_guard
 from ..services.openai_client import client
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,11 @@ class TriageSession:
     red_flags: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # Optimistic-lock revision (A6). The router increments this on every save;
+    # `triage_memory.save_session` rejects writes whose version disagrees with
+    # what's currently in Redis — that's the signal that another concurrent
+    # request raced us and the caller should reload + retry.
+    version: int = 0
 
     @classmethod
     def new(cls, user_id: str, locale: str, region: str | None) -> TriageSession:
@@ -227,7 +233,15 @@ class TriageSession:
     def from_json(cls, raw: str) -> TriageSession:
         data = json.loads(raw)
         data["state"] = TriageState(data["state"])
+        # Pre-A6 records have no `version` field; default to 0 so they continue
+        # to load and the next save will compare-and-swap from version=0.
+        data.setdefault("version", 0)
         return cls(**data)
+
+
+class TriageConcurrentUpdate(Exception):
+    """Raised by triage_memory.save_session when the persisted version doesn't
+    match the in-memory `session.version` — i.e. another writer landed first."""
 
 
 # ---- Normalized answer ----------------------------------------------------
@@ -351,16 +365,17 @@ async def normalize_answer(step: TriageStep, raw_answer: str, locale: str) -> No
     try:
         from ..config import settings
 
-        resp = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.1,
-            max_tokens=300,
-            response_format=cast(Any, {"type": "json_object"}),
-        )
+        async with openai_call_guard():
+            resp = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0.1,
+                max_tokens=300,
+                response_format=cast(Any, {"type": "json_object"}),
+            )
         raw_json = (resp.choices[0].message.content or "").strip()
         data = json.loads(raw_json)
     except Exception:
@@ -498,16 +513,17 @@ async def build_report(session: TriageSession, locale: str) -> TriageReport:
     try:
         from ..config import settings
 
-        resp = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.2,
-            max_tokens=600,
-            response_format=cast(Any, {"type": "json_object"}),
-        )
+        async with openai_call_guard():
+            resp = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0.2,
+                max_tokens=600,
+                response_format=cast(Any, {"type": "json_object"}),
+            )
         data = json.loads((resp.choices[0].message.content or "").strip())
     except Exception:
         logger.exception("triage.build_report failed; returning fallback report")

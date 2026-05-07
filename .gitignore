@@ -4,6 +4,9 @@
 
 .venv/
 .idea/
+.claude/
+.CLAUDE.md
+.PRODUCTION_COMPLETION_PLAN.md
 __pycache__/
 *.pyc
 .pytest_cache/

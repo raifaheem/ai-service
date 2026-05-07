@@ -25,68 +25,6 @@ def _is_header(line: str) -> bool:
     return bool(stripped.endswith(":") and len(stripped) < 100 and "\n" not in stripped)
 
 
-def chunk_article_text(
-    text: str,
-    chunk_size: int = 1000,
-    overlap: int = 200,
-) -> list[str]:
-    normalized = normalize_article_text(text)
-
-    if len(normalized) <= chunk_size:
-        return [normalized] if normalized else []
-
-    paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
-
-    chunks: list[str] = []
-    current_parts: list[str] = []
-    current_len = 0
-
-    for para in paragraphs:
-        para_len = len(para)
-
-        # If single paragraph exceeds chunk_size, split it by characters
-        if para_len > chunk_size:
-            # Flush current buffer first
-            if current_parts:
-                chunks.append("\n\n".join(current_parts))
-                current_parts = []
-                current_len = 0
-
-            # Character-level splitting for oversized paragraph
-            start = 0
-            while start < para_len:
-                end = min(start + chunk_size, para_len)
-                chunk = para[start:end].strip()
-                if chunk:
-                    chunks.append(chunk)
-                if end >= para_len:
-                    break
-                start = max(0, end - overlap)
-            continue
-
-        # Would adding this paragraph exceed chunk_size?
-        separator_len = 2 if current_parts else 0  # "\n\n" between paragraphs
-        if current_len + separator_len + para_len > chunk_size and current_parts:
-            chunks.append("\n\n".join(current_parts))
-
-            # Overlap: keep the last paragraph if it fits within overlap budget
-            last_part = current_parts[-1]
-            if len(last_part) <= overlap:
-                current_parts = [last_part]
-                current_len = len(last_part)
-            else:
-                current_parts = []
-                current_len = 0
-
-        current_parts.append(para)
-        current_len += separator_len + para_len
-
-    if current_parts:
-        chunks.append("\n\n".join(current_parts))
-
-    return chunks
-
-
 def chunk_article_with_headers(
     text: str,
     chunk_size: int = 1000,

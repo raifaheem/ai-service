@@ -124,6 +124,37 @@ class TestConversationOwnership:
                 )
         assert resp.status_code == 403
 
+    async def test_chat_owner_check_fails_closed_on_redis_error(self, mock_redis, mock_qdrant):
+        """B1: when Redis can't be queried for the owner, refuse with 503 instead
+        of proceeding without the check. The pre-blocker behaviour let an
+        attacker who could transiently disrupt Redis bypass ownership."""
+        from app.services import memory as memory_module
+
+        with patch("app.services.redis_client._redis", mock_redis), \
+             patch("app.services.redis_client.get_redis", return_value=mock_redis), \
+             patch("app.services.vector_client._qdrant", mock_qdrant), \
+             patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant), \
+             patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock), \
+             patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock), \
+             patch.object(
+                 memory_module, "get_owner", side_effect=ConnectionError("redis blip"),
+             ):
+            from app.main import app
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat",
+                    json={
+                        "message": "hi",
+                        "locale": "en",
+                        "conversation_id": "c3a1b2d4-5678-4abc-9def-0123456789ab",
+                    },
+                    headers={"X-Service-Token": "test-token", "X-User-Id": "u-1"},
+                )
+        assert resp.status_code == 503
+        assert "ownership" in resp.json()["detail"].lower()
+
     async def test_cannot_delete_other_users_conversation(self, mock_redis, mock_qdrant):
         mock_redis.get = AsyncMock(return_value=b"legitimate-owner")
 

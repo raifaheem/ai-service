@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     app_name: str = Field(default="health-ai-service", alias="APP_NAME")
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     allowed_origins: str = Field(default="*", alias="ALLOWED_ORIGINS")
-    enable_dev_routes: bool = Field(default=True, alias="ENABLE_DEV_ROUTES")
+    # L3: defaults to False — explicit opt-in for the seeder/verifier dev workflow.
+    # `_validate_prod_safety` *also* rejects True in production (defense in depth).
+    enable_dev_routes: bool = Field(default=False, alias="ENABLE_DEV_ROUTES")
 
     openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
@@ -21,7 +23,12 @@ class Settings(BaseSettings):
     service_token: str = Field(..., alias="SERVICE_TOKEN")  # comma-separated for rotation
 
     jwt_public_key: str | None = Field(default=None, alias="JWT_PUBLIC_KEY")
-    jwt_alg: str = Field(default="RS256", alias="JWT_ALG")
+    # `JWT_ALG` is intentionally NOT a setting any more — it's hardcoded to RS256 in
+    # security.py. Allowing operators to switch to HS256 while keeping the public key
+    # in JWT_PUBLIC_KEY is an attack surface (anyone with the public key can sign
+    # tokens). PyJWT also rejects this combination, but defense-in-depth.
+    jwt_audience: str | None = Field(default=None, alias="JWT_AUDIENCE")
+    jwt_issuer: str | None = Field(default=None, alias="JWT_ISSUER")
 
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     redis_prefix: str = Field(default="healthai", alias="REDIS_PREFIX")
@@ -65,6 +72,17 @@ class Settings(BaseSettings):
                 "dev-only /v1/rag/* endpoints would expose internal operations."
             )
 
+        # M5: CORS in production must enumerate allowed origins. `*` is rejected
+        # outright — main.py used to silently downgrade `allow_credentials=False`
+        # for the `*` case, but that papered over a misconfiguration we'd rather
+        # surface at boot. Specific consumer origins keep the credentials path
+        # safe and the surface area auditable.
+        if (self.allowed_origins or "").strip() == "*":
+            raise ValueError(
+                "ALLOWED_ORIGINS=* is not allowed when APP_ENV=production. "
+                "List the consumer origins explicitly (comma-separated)."
+            )
+
         # Redis must be password-protected in production. Both redis:// and rediss://
         # URLs encode credentials as user:password@host — presence of '@' is the marker.
         redis_url = (self.redis_url or "").strip()
@@ -83,6 +101,16 @@ class Settings(BaseSettings):
         if bad:
             raise ValueError(
                 f"SERVICE_TOKEN contains placeholder value(s): {bad}. " "Generate a strong random token for production."
+            )
+
+        # S1: when JWT auth is configured (public key set), require both audience
+        # and issuer in production. Without these claims the service accepts any
+        # RS256 token signed by the same CA as a different downstream consumer.
+        if self.jwt_public_key and (not self.jwt_audience or not self.jwt_issuer):
+            raise ValueError(
+                "JWT_AUDIENCE and JWT_ISSUER are required in production when "
+                "JWT_PUBLIC_KEY is set. Without them, tokens minted for a "
+                "different consumer of the same key would be accepted here."
             )
 
         return self

@@ -2,9 +2,10 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas import ChatRequest, UserProfile
-
+from app.schemas_rag import RAGChunkIn, RAGIndexRequest, RAGSearchRequest
 
 # --------------- conversation_id validation ---------------
+
 
 class TestConversationIdValidation:
     def test_valid_uuid(self):
@@ -32,6 +33,7 @@ class TestConversationIdValidation:
 
 
 # --------------- profile list validation ---------------
+
 
 class TestProfileListValidation:
     def test_valid_conditions(self):
@@ -85,6 +87,7 @@ class TestProfileListValidation:
 
 # --------------- metadata size validation ---------------
 
+
 class TestMetadataValidation:
     def test_small_metadata_accepted(self):
         req = ChatRequest(message="test", metadata={"key": "value"})
@@ -105,3 +108,54 @@ class TestMetadataValidation:
         meta = {"data": "x" * 4000}
         req = ChatRequest(message="test", metadata=meta)
         assert req.metadata is not None
+
+
+# --------------- RAG dev-route bounds (S4) ---------------
+
+
+class TestRAGChunkBounds:
+    def test_chunk_text_at_limit_accepted(self):
+        c = RAGChunkIn(text="x" * 8000, source_id="s")
+        assert len(c.text) == 8000
+
+    def test_chunk_text_over_limit_rejected(self):
+        with pytest.raises(ValidationError):
+            RAGChunkIn(text="x" * 8001, source_id="s")
+
+    def test_chunk_source_id_over_limit_rejected(self):
+        with pytest.raises(ValidationError):
+            RAGChunkIn(text="ok", source_id="s" * 201)
+
+    def test_chunk_title_over_limit_rejected(self):
+        with pytest.raises(ValidationError):
+            RAGChunkIn(text="ok", source_id="s", title="t" * 501)
+
+    def test_chunk_language_over_limit_rejected(self):
+        with pytest.raises(ValidationError):
+            RAGChunkIn(text="ok", source_id="s", language="x" * 9)
+
+
+class TestRAGIndexBounds:
+    def test_index_at_max_chunks_accepted(self):
+        chunks = [RAGChunkIn(text="t", source_id="s") for _ in range(200)]
+        req = RAGIndexRequest(chunks=chunks)
+        assert len(req.chunks) == 200
+
+    def test_index_over_max_chunks_rejected(self):
+        chunks = [RAGChunkIn(text="t", source_id="s") for _ in range(201)]
+        with pytest.raises(ValidationError):
+            RAGIndexRequest(chunks=chunks)
+
+
+class TestRAGSearchBounds:
+    def test_query_at_limit_accepted(self):
+        req = RAGSearchRequest(query="x" * 500)
+        assert len(req.query) == 500
+
+    def test_query_over_limit_rejected(self):
+        with pytest.raises(ValidationError):
+            RAGSearchRequest(query="x" * 501)
+
+    def test_search_language_over_limit_rejected(self):
+        with pytest.raises(ValidationError):
+            RAGSearchRequest(query="ok", language="x" * 9)

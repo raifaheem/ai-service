@@ -2,6 +2,7 @@ import json
 
 from ..config import settings
 from .i18n import normalize_locale
+from .openai_call_guard import openai_call_guard
 from .openai_client import client
 
 
@@ -55,22 +56,23 @@ async def analyze_article_text(
         language=language,
     )
 
-    resp = await client.chat.completions.create(
-        model=settings.openai_model,
-        temperature=0.2,
-        max_tokens=1200,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a careful assistant for analyzing medical materials.",
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-    )
+    async with openai_call_guard():
+        resp = await client.chat.completions.create(
+            model=settings.openai_model,
+            temperature=0.2,
+            max_tokens=1200,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a careful assistant for analyzing medical materials.",
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+        )
 
     content = (resp.choices[0].message.content or "").strip()
 

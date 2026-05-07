@@ -88,3 +88,23 @@ def test_compress_sources_preserves_score():
     ]
     result = compress_sources(chunks)
     assert result[0]["score"] == 0.85
+
+
+def test_compress_sources_surfaces_is_fallback():
+    """M12: cross-language fallback chunks must carry `is_fallback=True` through to clients."""
+    chunks = [
+        {"source_id": "s1", "title": "T", "language": "en", "score": 0.6, "is_fallback": True},
+    ]
+    result = compress_sources(chunks)
+    assert result[0]["is_fallback"] is True
+
+
+def test_compress_sources_omits_is_fallback_when_falsy():
+    """In-language hits should NOT carry the field at all (cleaner JSON)."""
+    chunks = [
+        {"source_id": "s1", "title": "T", "language": "ru", "score": 0.85},  # no is_fallback
+        {"source_id": "s2", "title": "T2", "language": "ru", "score": 0.7, "is_fallback": False},
+    ]
+    result = compress_sources(chunks)
+    assert "is_fallback" not in result[0]
+    assert "is_fallback" not in result[1]

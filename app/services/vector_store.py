@@ -1,5 +1,7 @@
 import uuid
 
+import httpx
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from qdrant_client.models import (
     Distance,
     FieldCondition,
@@ -11,8 +13,30 @@ from qdrant_client.models import (
 )
 
 from ..config import settings
+from .breaker_guard import breaker_guard
+from .circuit_breaker import qdrant_breaker
 from .embeddings import embed_text, embed_texts, get_embedding_dimension
 from .vector_client import get_qdrant
+
+
+class QdrantUnavailable(Exception):
+    """Raised when the Qdrant breaker is open or the call is in flight when one trips."""
+
+
+# Exceptions that should count as breaker failures. ConnectionError and TimeoutError
+# cover socket-level issues; UnexpectedResponse / ResponseHandlingException cover
+# qdrant-client surfacing 5xx and HTTP transport problems.
+_QDRANT_RECORDED_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    UnexpectedResponse,
+    ResponseHandlingException,
+    httpx.HTTPError,
+    ConnectionError,
+    TimeoutError,
+)
+
+
+def _qdrant_guard():
+    return breaker_guard(qdrant_breaker, QdrantUnavailable, _QDRANT_RECORDED_EXCEPTIONS)
 
 
 def _extract_collection_vector_size(collection_info) -> int | None:
@@ -81,10 +105,11 @@ async def upsert_text_chunks(chunks: list[dict], redis_client=None) -> int:
             )
         )
 
-    await client.upsert(
-        collection_name=settings.qdrant_collection,
-        points=points,
-    )
+    async with _qdrant_guard():
+        await client.upsert(
+            collection_name=settings.qdrant_collection,
+            points=points,
+        )
 
     return len(points)
 
@@ -174,10 +199,11 @@ async def delete_chunks_by_source(source_id: str) -> int:
     if matched == 0:
         return 0
 
-    await client.delete(
-        collection_name=settings.qdrant_collection,
-        points_selector=FilterSelector(filter=filt),
-    )
+    async with _qdrant_guard():
+        await client.delete(
+            collection_name=settings.qdrant_collection,
+            points_selector=FilterSelector(filter=filt),
+        )
     return matched
 
 
@@ -202,13 +228,14 @@ async def search_text_chunks(
             ]
         )
 
-    results = await client.search(
-        collection_name=settings.qdrant_collection,
-        query_vector=query_vector,
-        limit=limit,
-        query_filter=query_filter,
-        with_payload=True,
-    )
+    async with _qdrant_guard():
+        results = await client.search(
+            collection_name=settings.qdrant_collection,
+            query_vector=query_vector,
+            limit=limit,
+            query_filter=query_filter,
+            with_payload=True,
+        )
 
     items = _qdrant_results_to_items(results)
 
@@ -218,13 +245,14 @@ async def search_text_chunks(
 
     # Multilingual fallback: if too few results and fallback_languages provided
     if len(items) < 2 and fallback_languages and language:
-        fallback_results = await client.search(
-            collection_name=settings.qdrant_collection,
-            query_vector=query_vector,
-            limit=limit,
-            query_filter=None,
-            with_payload=True,
-        )
+        async with _qdrant_guard():
+            fallback_results = await client.search(
+                collection_name=settings.qdrant_collection,
+                query_vector=query_vector,
+                limit=limit,
+                query_filter=None,
+                with_payload=True,
+            )
         fallback_items = _qdrant_results_to_items(fallback_results)
         fallback_items = [item for item in fallback_items if item["score"] >= threshold]
 

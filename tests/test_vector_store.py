@@ -1,5 +1,4 @@
 from unittest.mock import AsyncMock, MagicMock, patch
-from dataclasses import dataclass
 
 import pytest
 
@@ -8,8 +7,8 @@ from app.services.vector_store import (
     _qdrant_results_to_items,
 )
 
-
 # --------------- _extract_collection_vector_size ---------------
+
 
 class TestExtractCollectionVectorSize:
     def test_returns_size(self):
@@ -28,6 +27,7 @@ class TestExtractCollectionVectorSize:
 
 
 # --------------- _qdrant_results_to_items ---------------
+
 
 class TestQdrantResultsToItems:
     def test_converts_results(self):
@@ -91,6 +91,7 @@ class TestQdrantResultsToItems:
 
 # --------------- ensure_qdrant_collection ---------------
 
+
 class TestEnsureQdrantCollection:
     async def test_creates_collection_if_not_exists(self):
         mock_client = AsyncMock()
@@ -99,9 +100,12 @@ class TestEnsureQdrantCollection:
         mock_client.get_collections = AsyncMock(return_value=collections_response)
         mock_client.create_collection = AsyncMock()
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.get_embedding_dimension", return_value=1536):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.get_embedding_dimension", return_value=1536),
+        ):
             from app.services.vector_store import ensure_qdrant_collection
+
             await ensure_qdrant_collection()
 
         mock_client.create_collection.assert_called_once()
@@ -119,9 +123,12 @@ class TestEnsureQdrantCollection:
         info.config.params.vectors.size = 1536
         mock_client.get_collection = AsyncMock(return_value=info)
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.get_embedding_dimension", return_value=1536):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.get_embedding_dimension", return_value=1536),
+        ):
             from app.services.vector_store import ensure_qdrant_collection
+
             await ensure_qdrant_collection()
 
         mock_client.create_collection.assert_not_called()
@@ -139,14 +146,18 @@ class TestEnsureQdrantCollection:
         info.config.params.vectors.size = 768
         mock_client.get_collection = AsyncMock(return_value=info)
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.get_embedding_dimension", return_value=1536):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.get_embedding_dimension", return_value=1536),
+        ):
             from app.services.vector_store import ensure_qdrant_collection
+
             with pytest.raises(RuntimeError, match="vector size"):
                 await ensure_qdrant_collection()
 
 
 # --------------- upsert_text_chunks ---------------
+
 
 class TestUpsertTextChunks:
     async def test_upserts_chunks(self):
@@ -158,9 +169,14 @@ class TestUpsertTextChunks:
             {"text": "Second chunk", "source_id": "src-1", "title": "Article", "language": "en"},
         ]
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.embed_texts", new_callable=AsyncMock, return_value=[[0.1]*10, [0.2]*10]):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch(
+                "app.services.vector_store.embed_texts", new_callable=AsyncMock, return_value=[[0.1] * 10, [0.2] * 10]
+            ),
+        ):
             from app.services.vector_store import upsert_text_chunks
+
             count = await upsert_text_chunks(chunks)
 
         assert count == 2
@@ -168,6 +184,7 @@ class TestUpsertTextChunks:
 
     async def test_empty_chunks(self):
         from app.services.vector_store import upsert_text_chunks
+
         count = await upsert_text_chunks([])
         assert count == 0
 
@@ -180,15 +197,19 @@ class TestUpsertTextChunks:
             {"text": "Valid text", "source_id": "src-2"},
         ]
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.embed_texts", new_callable=AsyncMock, return_value=[[0.1]*10]):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_texts", new_callable=AsyncMock, return_value=[[0.1] * 10]),
+        ):
             from app.services.vector_store import upsert_text_chunks
+
             count = await upsert_text_chunks(chunks)
 
         assert count == 1
 
 
 # --------------- search_text_chunks ---------------
+
 
 class TestSearchTextChunks:
     async def test_basic_search(self):
@@ -199,9 +220,12 @@ class TestSearchTextChunks:
         search_result.payload = {"text": "Result text", "source_id": "src-1"}
         mock_client.search = AsyncMock(return_value=[search_result])
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1]*10):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
             from app.services.vector_store import search_text_chunks
+
             results = await search_text_chunks("headache treatment")
 
         assert len(results) == 1
@@ -211,9 +235,12 @@ class TestSearchTextChunks:
         mock_client = AsyncMock()
         mock_client.search = AsyncMock(return_value=[])
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1]*10):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
             from app.services.vector_store import search_text_chunks
+
             await search_text_chunks("test", language="en")
 
         call_args = mock_client.search.call_args
@@ -233,9 +260,12 @@ class TestSearchTextChunks:
 
         mock_client.search = AsyncMock(return_value=[high_score, low_score])
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1]*10):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
             from app.services.vector_store import search_text_chunks
+
             results = await search_text_chunks("test")
 
         assert len(results) == 1
@@ -250,10 +280,118 @@ class TestSearchTextChunks:
         result.payload = {"text": "Fallback", "source_id": "s1"}
         mock_client.search = AsyncMock(side_effect=[[], [result]])
 
-        with patch("app.services.vector_store.get_qdrant", return_value=mock_client), \
-             patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1]*10):
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
             from app.services.vector_store import search_text_chunks
+
             results = await search_text_chunks("test", language="kk", fallback_languages=["ru", "en"])
 
         assert mock_client.search.call_count == 2
         assert len(results) == 1
+
+
+# --------------- A2: qdrant_breaker integration ---------------
+
+
+class TestQdrantBreaker:
+    """Verify search/upsert calls flow through the qdrant_breaker.
+
+    Failures of the recorded exception types must increment failure_count;
+    successes must reset it. The breaker is a module-level singleton, so
+    each test resets it explicitly.
+    """
+
+    @pytest.fixture(autouse=True)
+    async def reset_breaker(self):
+        from app.services.circuit_breaker import qdrant_breaker
+
+        await qdrant_breaker.reset()
+        yield
+        await qdrant_breaker.reset()
+
+    async def test_search_records_success(self):
+        mock_client = AsyncMock()
+        mock_client.search = AsyncMock(return_value=[])
+
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
+            from app.services.circuit_breaker import qdrant_breaker
+            from app.services.vector_store import search_text_chunks
+
+            await search_text_chunks("anything")
+            # Successful call leaves breaker closed.
+            assert await qdrant_breaker.is_available
+
+    async def test_search_records_failure_on_qdrant_error(self):
+        from qdrant_client.http.exceptions import UnexpectedResponse
+
+        mock_client = AsyncMock()
+        # UnexpectedResponse needs a structured constructor in real qdrant-client; mock the type check.
+        mock_client.search = AsyncMock(side_effect=UnexpectedResponse(500, "boom", b"err", None))
+
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
+            from app.services.circuit_breaker import qdrant_breaker
+            from app.services.vector_store import search_text_chunks
+
+            with pytest.raises(UnexpectedResponse):
+                await search_text_chunks("query")
+            # _local_failure_count is the closest signal we can read without HGETALL.
+            assert qdrant_breaker._local_failure_count == 1
+
+    async def test_search_records_failure_on_connection_error(self):
+        mock_client = AsyncMock()
+        mock_client.search = AsyncMock(side_effect=ConnectionError("network down"))
+
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
+            from app.services.circuit_breaker import qdrant_breaker
+            from app.services.vector_store import search_text_chunks
+
+            with pytest.raises(ConnectionError):
+                await search_text_chunks("query")
+            assert qdrant_breaker._local_failure_count == 1
+
+    async def test_search_blocked_when_breaker_open(self):
+        from app.services.circuit_breaker import qdrant_breaker
+        from app.services.vector_store import QdrantUnavailable, search_text_chunks
+
+        # Force-open the breaker (3 failures default).
+        qdrant_breaker._local_state = "open"
+        qdrant_breaker._local_failure_count = 3
+        qdrant_breaker._local_last_failure = 9_999_999_999.0  # in the future → no half_open transition
+        qdrant_breaker._last_sync = 9_999_999_999.0
+
+        mock_client = AsyncMock()
+        mock_client.search = AsyncMock(return_value=[])
+
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_text", new_callable=AsyncMock, return_value=[0.1] * 10),
+        ):
+            with pytest.raises(QdrantUnavailable):
+                await search_text_chunks("query")
+            # Breaker rejected the call before mock_client.search could run.
+            mock_client.search.assert_not_called()
+
+    async def test_upsert_records_success(self):
+        mock_client = AsyncMock()
+        mock_client.upsert = AsyncMock()
+
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.embed_texts", new_callable=AsyncMock, return_value=[[0.1] * 10]),
+        ):
+            from app.services.circuit_breaker import qdrant_breaker
+            from app.services.vector_store import upsert_text_chunks
+
+            await upsert_text_chunks([{"text": "hello", "source_id": "s1", "language": "ru"}])
+            assert await qdrant_breaker.is_available

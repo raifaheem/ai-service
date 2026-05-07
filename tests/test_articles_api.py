@@ -20,10 +20,11 @@ def test_analyze_file_txt():
     with (
         patch("app.routers.articles.upsert_text_chunks", new=AsyncMock(return_value=1)),
         patch("app.routers.articles.analyze_article_text", new=AsyncMock(return_value=_FAKE_ANALYSIS)),
+        patch("app.routers.articles.enforce_rate_limit", new=AsyncMock()),
     ):
         response = client.post(
             "/v1/articles/analyze-file",
-            headers={"X-Service-Token": "test-token"},
+            headers={"X-Service-Token": "test-token", "X-User-Id": "articles-test-user"},
             files={
                 "file": ("sample.txt", b"Migraine " * 50, "text/plain"),
             },
@@ -73,10 +74,11 @@ def test_analyze_article_passes_headers_to_upsert():
     with (
         patch("app.routers.articles.upsert_text_chunks", new=_capture_upsert),
         patch("app.routers.articles.analyze_article_text", new=AsyncMock(return_value=_FAKE_ANALYSIS)),
+        patch("app.routers.articles.enforce_rate_limit", new=AsyncMock()),
     ):
         response = client.post(
             "/v1/articles/analyze",
-            headers={"X-Service-Token": "test-token"},
+            headers={"X-Service-Token": "test-token", "X-User-Id": "articles-test-user"},
             json={
                 "title": "Headaches",
                 "text": article_body,
@@ -99,3 +101,73 @@ def test_analyze_article_passes_headers_to_upsert():
         assert "chunk_index" in chunk["metadata"]
         assert "total_chunks" in chunk["metadata"]
         assert "header" in chunk["metadata"]
+
+
+# --------------- S6: rate-limit + max_length ---------------
+
+
+def test_analyze_without_x_user_id_is_400():
+    """S6: service-token auth without X-User-Id can't be rate-limited per user, so reject."""
+    client = TestClient(app)
+    response = client.post(
+        "/v1/articles/analyze",
+        headers={"X-Service-Token": "test-token"},  # no X-User-Id
+        json={
+            "title": "Headache",
+            "text": "headache " * 50,
+            "language": "en",
+            "index_chunks": False,
+        },
+    )
+    assert response.status_code == 400
+    assert "X-User-Id" in response.json()["detail"]
+
+
+def test_analyze_rate_limit_enforced():
+    """S6: when the limiter raises 429, the route surfaces it (no LLM call)."""
+    from fastapi import HTTPException
+
+    client = TestClient(app)
+    llm_calls = {"n": 0}
+
+    async def _fake_llm(*args, **kwargs):
+        llm_calls["n"] += 1
+        return _FAKE_ANALYSIS
+
+    async def _raise_429(_):
+        raise HTTPException(status_code=429, detail="Too many requests")
+
+    with (
+        patch("app.routers.articles.enforce_rate_limit", new=_raise_429),
+        patch("app.routers.articles.analyze_article_text", new=_fake_llm),
+        patch("app.routers.articles.upsert_text_chunks", new=AsyncMock(return_value=1)),
+    ):
+        response = client.post(
+            "/v1/articles/analyze",
+            headers={"X-Service-Token": "test-token", "X-User-Id": "rl-user"},
+            json={
+                "title": "Headache",
+                "text": "headache " * 50,
+                "language": "en",
+                "index_chunks": False,
+            },
+        )
+
+    assert response.status_code == 429
+    assert llm_calls["n"] == 0
+
+
+def test_analyze_text_max_length_rejected():
+    """S6: 200_001-char body rejected before the route runs."""
+    client = TestClient(app)
+    response = client.post(
+        "/v1/articles/analyze",
+        headers={"X-Service-Token": "test-token", "X-User-Id": "len-user"},
+        json={
+            "title": "Long",
+            "text": "x" * 200_001,
+            "language": "en",
+            "index_chunks": False,
+        },
+    )
+    assert response.status_code == 422

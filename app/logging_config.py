@@ -21,10 +21,15 @@ class PIIRedactorFilter(logging.Filter):
 
     Medical conversations routinely include user-supplied symptoms, conditions,
     and profile info. None of that should leak into application logs — the right
-    substrate for debugging medical content is an audit stream (see app/services/audit.py
-    once landed), not stdout. This filter catches cases where a caller
-    accidentally logs via `extra={"user_message": ...}` by replacing the value
-    with <REDACTED> before the formatter runs.
+    substrate for debugging medical content is an audit stream (see app/services/audit.py),
+    not stdout. This filter catches cases where a caller accidentally logs via
+    `extra={"user_message": ...}` — or via a nested container like
+    `extra={"context": {"user_message": ...}}` — by replacing the value with
+    <REDACTED> before the formatter runs.
+
+    Walks dicts/lists/tuples up to `_MAX_DEPTH` levels and `_MAX_NODES` total
+    nodes — the cap protects against runaway traversal on hostile or
+    accidentally circular structures.
 
     The formatter still has access to contextual ids (request_id, conversation_id,
     user_id) — those are not PII in the medical sense.
@@ -41,12 +46,55 @@ class PIIRedactorFilter(logging.Filter):
         }
     )
     _REDACTED = "<REDACTED>"
+    _MAX_DEPTH = 3
+    _MAX_NODES = 1000
 
     def filter(self, record: logging.LogRecord) -> bool:
+        seen: set[int] = set()
+        budget = [self._MAX_NODES]
         for key in list(record.__dict__.keys()):
             if key in self._REDACT_KEYS:
                 record.__dict__[key] = self._REDACTED
+                continue
+            value = record.__dict__[key]
+            if isinstance(value, dict | list | tuple):
+                record.__dict__[key] = self._redact_value(value, depth=1, seen=seen, budget=budget)
         return True
+
+    def _redact_value(self, value, depth: int, seen: set[int], budget: list[int]):
+        if budget[0] <= 0 or depth > self._MAX_DEPTH:
+            return value
+        budget[0] -= 1
+
+        if isinstance(value, dict):
+            ident = id(value)
+            if ident in seen:
+                return value
+            seen.add(ident)
+            for k in list(value.keys()):
+                if k in self._REDACT_KEYS:
+                    value[k] = self._REDACTED
+                elif isinstance(value[k], dict | list | tuple):
+                    value[k] = self._redact_value(value[k], depth + 1, seen, budget)
+            return value
+
+        if isinstance(value, list):
+            ident = id(value)
+            if ident in seen:
+                return value
+            seen.add(ident)
+            for i, item in enumerate(value):
+                if isinstance(item, dict | list | tuple):
+                    value[i] = self._redact_value(item, depth + 1, seen, budget)
+            return value
+
+        if isinstance(value, tuple):
+            return tuple(
+                self._redact_value(item, depth + 1, seen, budget) if isinstance(item, dict | list | tuple) else item
+                for item in value
+            )
+
+        return value
 
 
 def setup_logging(log_level: str = "INFO", log_format: str = "text") -> None:

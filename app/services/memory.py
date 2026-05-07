@@ -175,7 +175,7 @@ async def update_metadata(conversation_id: str, **kwargs) -> dict:
     return meta
 
 
-# --------------- Idempotency keys (C.4) ---------------
+# --------------- Idempotency keys (C.4 + A5 fingerprinting) ---------------
 
 _IDEMPOTENCY_TTL_SECONDS = 600  # 10 minutes
 
@@ -184,24 +184,33 @@ def _idempotency_key(user_id: str, key: str) -> str:
     return f"{settings.redis_prefix}:idem:{user_id}:{key}"
 
 
-async def get_idempotent_response(user_id: str, key: str) -> dict | None:
-    """Return the cached ChatResponse dict for (user_id, key), or None."""
+async def get_idempotent_entry(user_id: str, key: str) -> dict | None:
+    """Return the cached entry `{fingerprint, response}` or None.
+
+    A5: a client that retries with the same idempotency key but a different
+    request body is a real bug we want to surface (HTTP 409 in the router) —
+    silently returning the previous answer would mask it.
+    """
     r = get_redis()
     raw = await r.get(_idempotency_key(user_id, key))
     if not raw:
         return None
     try:
-        return json.loads(raw)
+        entry = json.loads(raw)
     except Exception:
         return None
+    if not isinstance(entry, dict) or "fingerprint" not in entry or "response" not in entry:
+        return None
+    return entry
 
 
-async def set_idempotent_response(user_id: str, key: str, response: dict) -> None:
-    """Cache the ChatResponse dict for 10 minutes, scoped to (user_id, key)."""
+async def set_idempotent_entry(user_id: str, key: str, fingerprint: str, response: dict) -> None:
+    """Cache the response with its body fingerprint, scoped to (user_id, key)."""
     r = get_redis()
+    payload = {"fingerprint": fingerprint, "response": response}
     await r.set(
         _idempotency_key(user_id, key),
-        json.dumps(response, ensure_ascii=False),
+        json.dumps(payload, ensure_ascii=False),
         ex=_IDEMPOTENCY_TTL_SECONDS,
     )
 

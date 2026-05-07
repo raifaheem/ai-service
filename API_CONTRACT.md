@@ -34,8 +34,9 @@ X-User-Id:       <end-user id, string>
 Authorization: Bearer <jwt>
 ```
 
-- RS256-signed, verified against `JWT_PUBLIC_KEY` in the service `.env`.
-- Required claim: `sub` (becomes the user id). `exp` is honored.
+- **RS256 only.** The algorithm is hardcoded in [security.py](app/security.py); HS256 tokens are rejected even if the public key is supplied as a "shared secret" (defense against the classic alg-confusion attack).
+- Required claims: `sub` (becomes the user id), `exp`.
+- `aud` (audience) and `iss` (issuer) are pinned **when configured** via `JWT_AUDIENCE` / `JWT_ISSUER` env vars. Tokens with mismatched or missing claims are rejected. In production these env vars are required when `JWT_PUBLIC_KEY` is set — without them, tokens minted for a different consumer of the same key would be accepted.
 - `X-User-Id` is **ignored** when a valid JWT is present.
 
 ### 1.3 Errors
@@ -118,10 +119,10 @@ curl -X POST http://localhost:8001/v1/chat \
 | `locale` | string | `ru` \| `en` \| `kk` | Unknown values fall back to `ru`. |
 | `profile` | object | optional | See `UserProfile` — personalization fields. |
 | `conversation_id` | string | UUID v4, optional | Server generates one when omitted. Ownership is locked on first write. |
-| `history` | array | optional | When provided, replaces server-stored history (trimmed to last 8). |
+| `history` | array | optional | When provided, replaces server-stored history. The summarizer (>8 turns → summary + last 6) decides what to keep regardless of source. |
 | `metadata` | object | ≤ 5 KB JSON | Free-form client metadata. |
 | `region` | string | ISO 3166-1 alpha-2, optional | Used to localize the emergency-phone number on emergency-intent replies (e.g. `KZ` → `112 / 103`, `US` → `911`, `GB` → `999`). Unknown/omitted values fall back to a locale-specific default. |
-| `idempotency_key` | string | ≤ 64 chars, optional | Scoped per user. A repeat request within 10 min returns the cached response. Sync `/v1/chat` only. |
+| `idempotency_key` | string | ≤ 64 chars, optional | Scoped per `(user_id, key)`. A repeat with the same key **and** the same body returns the cached response (10-min TTL). A repeat with the same key but a **different** body fingerprint returns **409 Conflict**. Fingerprint composition: `sha256(message + \x1f + conversation_id + \x1f + locale + \x1f + region)`. Sync `/v1/chat` only. Cache replays are recorded in the audit log as `chat.answer` events with `cached=true`. |
 
 ---
 
@@ -129,23 +130,23 @@ curl -X POST http://localhost:8001/v1/chat \
 
 Same pipeline as `/v1/chat` but emits `Server-Sent Events` (`text/event-stream`).
 
-**Event sequence**
+**Event sequence** — every event payload includes `request_id` (echoes the response header) so support tickets can cite a single id.
 
 | Event | Fired | Payload |
 | --- | --- | --- |
-| `meta`  | exactly once, first      | `{"conversation_id": "<uuid>"}` |
-| `delta` | zero or more             | `{"text": "<partial text>"}` |
-| `final` | once on success          | `{conversation_id, answer, disclaimer, model, finish_reason, usage, rag_used, rag_score, sources, intent}` |
-| `error` | replaces `final` on failure | `{conversation_id, code, message}` |
+| `meta`  | exactly once, first      | `{"request_id": "...", "conversation_id": "<uuid>"}` |
+| `delta` | zero or more             | `{"request_id": "...", "text": "<partial text>"}` |
+| `final` | once on success          | `{request_id, conversation_id, answer, disclaimer, model, finish_reason, usage, rag_used, rag_score, sources, intent}` |
+| `error` | replaces `final` on failure | `{request_id, conversation_id, code, message}` |
 
-**SSE error codes** (`code` field inside an `error` event)
+**SSE error codes** (`code` field inside an `error` event). The `message` field is intentionally generic ("Upstream service unavailable.") for upstream errors so we don't leak provider-side details to clients — branch on `code`, not `message`.
 
 | Code | Cause |
 | --- | --- |
-| `openai_rate_limit` | OpenAI 429 (quota / billing). |
-| `openai_auth` | OpenAI authentication failure — `OPENAI_API_KEY` issue. |
-| `openai_connection` | Network error reaching OpenAI. |
-| `openai_api_status` | OpenAI returned a non-2xx HTTP status. |
+| `openai_rate_limit` | Upstream 429 (quota / billing). |
+| `openai_auth` | Upstream authentication failure. |
+| `openai_connection` | Network error reaching upstream. |
+| `openai_api_status` | Upstream returned a non-2xx HTTP status. |
 | `service_degraded` | OpenAI circuit breaker open (3+ failures in 60 s window). |
 | `internal_error` | Unhandled exception in the streaming handler. |
 
@@ -202,7 +203,7 @@ Deletes turns, summary, owner, and metadata. Returns `{"deleted": true, "convers
 
 ### 2.6 `POST /v1/articles/analyze`
 
-Chunk, index, and analyze a medical article from a JSON body.
+Chunk, index, and analyze a medical article from a JSON body. Both article endpoints require `X-User-Id` (or a JWT with `sub`) — they share the chat rate-limit bucket per user. `text` is capped at 200 000 characters.
 
 ```bash
 curl -X POST http://localhost:8001/v1/articles/analyze \
@@ -243,9 +244,9 @@ Same as above but accepts a `.txt` / `.pdf` / `.docx` upload via `multipart/form
 
 `status` is `"degraded"` when any dependency is unavailable or the OpenAI circuit is open. Wire this to the orchestrator's liveness probe.
 
-### 2.9 `GET /metrics` — in-process metrics
+### 2.9 `GET /metrics` — Prometheus metrics
 
-Unauthenticated snapshot of request counts, token usage, RAG hit rate, error rate, plus live Redis / Qdrant sizes. **Keep behind a private network or add auth before exposing externally.**
+**Authenticated** (same `X-Service-Token` or `Authorization: Bearer <jwt>` as the other routes). Returns Prometheus text format (`Content-Type: text/plain; version=0.0.4`) with per-worker shards aggregated via `prometheus_client.multiprocess`. Exposes `healthai_requests_total`, `healthai_request_duration_seconds`, `healthai_intent_total`, `healthai_openai_tokens_total`, `healthai_rag_requests_total`, `healthai_circuit_breaker_state`, `healthai_active_conversations`, `healthai_qdrant_collection_size`. In-cluster Prometheus scrapers should pull `X-Service-Token` from a Kubernetes secret.
 
 ### 2.10 Dev-only RAG management (`ENABLE_DEV_ROUTES=true`)
 
@@ -264,7 +265,7 @@ These endpoints are intentionally omitted from the Laravel migration table in §
 
 ### 2.11 Pre-consultation triage — `POST /v1/triage/session`
 
-Server-driven symptom intake: a fixed 10-step form that collects the chief complaint, onset, trajectory, severity (1–10), accompanying symptoms, triggers, relevant history, current medications, allergies, and an explicit red-flag screen. The server owns the step sequence; the client just forwards the user's free-text answer each turn. Output is a clinician-facing JSON report with a specialist routing recommendation from a closed enum.
+Server-driven symptom intake: a fixed 10-step form that collects the chief complaint, onset, trajectory, severity (0–10), accompanying symptoms, triggers, relevant history, current medications, allergies, and an explicit red-flag screen. The server owns the step sequence; the client just forwards the user's free-text answer each turn. Output is a clinician-facing JSON report with a specialist routing recommendation from a closed enum. Free-text answers are run through the same prompt-injection guard as `/v1/chat`; on every red-flag step the server *also* runs a deterministic keyword scan (`chest pain`, `loss of consciousness`, `боль в груди`, …) so the LLM cannot be talked out of detecting an emergency.
 
 **Start (no `session_id`)**
 
@@ -312,9 +313,41 @@ X-User-Id: 42
 
 Response shapes by `state`:
 
-- `in_progress` → `next_step: {step_id, question, kind, choices?, range?, clarification?}`. `clarification` is set when the server wants the user to restate (max 2 per step, then force-accepted as unparsed).
+- `in_progress` → `next_step: {step_id, question, kind, choices?, range?, clarification?}`. `clarification` is set when the server wants the user to restate (max 2 per step, then force-accepted as unparsed). The injection-guard refusal is also delivered as a `clarification` without advancing the step index.
 - `completed` → `report: {clinical_summary, structured, specialist_recommendation: {category, rationale}, detected_red_flags}`. `category` is one of `gp, emergency_room, urgent_care, cardiologist, neurologist, gastroenterologist, dermatologist, endocrinologist, pulmonologist, psychiatrist, gynecologist, urologist, orthopedist, otolaryngologist`; out-of-enum values fall back to `gp`.
-- `red_flag_exit` → `emergency_message` (locale-specific), `detected_red_flag`, `emergency_phone`. The phone is resolved via [D.1 regionalization](#) — `region=KZ` → `"112 / 103"`, `region=US` → `"911"`, unknown region → locale-neutral default.
+- `red_flag_exit` → `emergency_message` (locale-specific), `detected_red_flag`, `emergency_phone`. The phone is resolved via [D.1 regionalization](#) — `region=KZ` → `"112 / 103"`, `region=US` → `"911"`, unknown region → locale-neutral default. `detected_red_flag` carries the LLM's reason or `keyword:<pattern>` when the deterministic scan caught it.
+
+**`completed` example**
+
+```json
+{
+  "session_id": "c3a1b2d4-5678-4abc-9def-0123456789ab",
+  "state": "completed",
+  "step_index": 9,
+  "total_steps": 10,
+  "report": {
+    "clinical_summary": "Patient reports a 3-day pulsating right-sided headache, severity 6/10, worsening trajectory. No nausea or photophobia. No prior history of migraine. Currently on no medications, no allergies.",
+    "structured": {
+      "primary_complaint": "right-sided headache",
+      "onset": "3 days ago",
+      "trajectory": "worsening",
+      "severity": 6,
+      "accompanying": "none",
+      "triggers": "screen time",
+      "relevant_history": "none",
+      "current_meds": "none",
+      "allergies": "none",
+      "explicit_red_flags": false
+    },
+    "specialist_recommendation": {
+      "category": "neurologist",
+      "rationale": "Recurrent localized headache pattern with worsening trajectory warrants neurological review."
+    },
+    "detected_red_flags": []
+  },
+  "disclaimer": "This is not a medical diagnosis and does not replace consultation with a doctor."
+}
+```
 
 **Request schema**
 
@@ -332,7 +365,7 @@ Response shapes by `state`:
 | 0 | `primary_complaint` | free_text | yes |
 | 1 | `onset` | free_text | — |
 | 2 | `trajectory` | choice (worsening/stable/improving) | — |
-| 3 | `severity` | int_scale (1–10) | — |
+| 3 | `severity` | int_scale (0–10) | — |
 | 4 | `accompanying` | free_text | yes |
 | 5 | `triggers` | free_text | — |
 | 6 | `relevant_history` | free_text | — |
@@ -347,7 +380,7 @@ Response shapes by `state`:
 | `400` | `answer` missing when `session_id` supplied. |
 | `403` | Session belongs to a different user. |
 | `404` | Session not found or expired. |
-| `409` | Session already terminated (`red_flag_exit` or `completed`) — start a new one. |
+| `409` | Session already terminated (`red_flag_exit` or `completed`) — start a new one. **Also returned when a concurrent advance landed first** (CAS on `version`); reload the session and retry. |
 | `429` | Rate limit exceeded (same per-user bucket as `/v1/chat`). |
 
 **Recovery and cancel**
@@ -365,8 +398,9 @@ Response shapes by `state`:
 | `401` | Missing or invalid authentication. |
 | `403` | `conversation_id` belongs to a different user. |
 | `404` | Conversation / metadata not found or expired. |
+| `409` | `idempotency_key` reused with a different request body (`/v1/chat`); concurrent triage advance landed first (`/v1/triage/session`); session already terminated. |
 | `413` | File upload exceeds 10 MB. |
-| `422` | Pydantic validation error (malformed JSON, wrong types). |
+| `422` | Pydantic validation error (malformed JSON, wrong types, `text` over `max_length`). |
 | `429` | Rate limit exceeded (`RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST`). |
 | `502` | Upstream failure (OpenAI auth / connection / API status, article LLM analysis failure). |
 | `503` | Service degraded (circuit breaker open, OpenAI quota exhausted). |
@@ -398,11 +432,14 @@ The `X-Request-Id` response header is always present — include it when reporti
 | Message length | 4000 chars | `ChatRequest.message` |
 | Metadata size | 5 KB (JSON-serialized) | `ChatRequest.metadata` |
 | Profile list items | 20 items × 200 chars | `UserProfile.*` |
-| History per request | trimmed to last 8 turns | `chat.py` |
-| Rate limit | `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` (25 default) per user per minute | `rate_limit.py` |
+| History per request | unbounded; summarizer caps LLM context (>8 turns → summary + last 6) | `chat.py`, `summarizer.py` |
+| Rate limit | `RATE_LIMIT_PER_MINUTE` + `RATE_LIMIT_BURST` (25 default) per user per minute (sliding window) | `rate_limit.py` |
 | Redis turn retention | `REDIS_MAX_TURNS` (12 default) | `memory.py` |
 | Redis TTL | `REDIS_TTL_SECONDS` | `memory.py` |
+| Idempotency cache TTL | 10 min | `memory.py` |
+| Article text length | 200 000 chars | `ArticleAnalyzeRequest.text` |
 | Article upload size | 10 MB | `articles.py` |
+| RAG dev `/v1/rag/index` chunk text | 8000 chars per chunk, 200 chunks per request | `schemas_rag.py` |
 
 ---
 
@@ -411,7 +448,11 @@ The `X-Request-Id` response header is always present — include it when reporti
 - `conversation_id` is a **UUIDv4**, ideally generated by the client. Omit it on the first request and the server will return one in the response.
 - Ownership is locked on the first successful write via Redis `SET NX` — a second user sending the same `conversation_id` gets `403`.
 - Redis TTL is refreshed on every append. A conversation silently expires after `REDIS_TTL_SECONDS` of inactivity.
-- When history exceeds 8 turns, the older portion is summarized and replaced (the summary is cached for the conversation's lifetime).
+- When history exceeds 8 turns, the older portion is summarized and replaced; the summary is refreshed every `RESUMMARIZE_AFTER_N_TURNS` (6) new turns so it doesn't freeze at the moment of first creation.
+
+### `sources[]` schema
+
+Each `ChatSource` carries `source_id`, `title`, `language`, `score`. When the chunk was retrieved via cross-language fallback (request locale had too few hits and the search was rerun without a language filter), an `is_fallback: true` field is added — clients can use this to mark such results visually. In-language hits omit the field entirely.
 
 ---
 

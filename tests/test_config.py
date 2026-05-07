@@ -14,6 +14,12 @@ def _base_prod_env() -> dict[str, str]:
         "SERVICE_TOKEN": "a-strong-random-token-xyz",
         "REDIS_URL": "redis://:secret@redis:6379/0",
         "QDRANT_URL": "http://qdrant:6333",
+        # Clear any JWT_PUBLIC_KEY the dev .env might bleed in — the base prod
+        # config does not enable JWT auth. Tests that want JWT enabled set the
+        # key + audience + issuer explicitly.
+        "JWT_PUBLIC_KEY": "",
+        "JWT_AUDIENCE": "",
+        "JWT_ISSUER": "",
     }
 
 
@@ -75,6 +81,29 @@ class TestProdSafety:
             monkeypatch.setenv(k, v)
         with pytest.raises(ValueError, match="SERVICE_TOKEN"):
             Settings()
+
+    def test_allowed_origins_star_in_prod_raises(self, monkeypatch):
+        env = _base_prod_env()
+        env["ALLOWED_ORIGINS"] = "*"
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        with pytest.raises(ValueError, match="ALLOWED_ORIGINS"):
+            Settings()
+
+    def test_allowed_origins_star_with_whitespace_in_prod_raises(self, monkeypatch):
+        env = _base_prod_env()
+        env["ALLOWED_ORIGINS"] = "  *  "
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        with pytest.raises(ValueError, match="ALLOWED_ORIGINS"):
+            Settings()
+
+    def test_explicit_origins_in_prod_pass(self, monkeypatch):
+        env = _base_prod_env()
+        env["ALLOWED_ORIGINS"] = "https://app.example.com,https://admin.example.com"
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        Settings()  # no raise
 
     def test_dev_env_skips_prod_validations(self, monkeypatch):
         # In dev, placeholder tokens and unauth'd Redis are fine.

@@ -96,3 +96,93 @@ def test_redactor_filter_always_passes_the_record():
     record.user_message = "secret"
     assert PIIRedactorFilter().filter(record) is True
     assert record.user_message == "<REDACTED>"
+
+
+def _make_record_with_extra(**extra) -> logging.LogRecord:
+    record = logging.LogRecord(
+        name="t",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="msg",
+        args=(),
+        exc_info=None,
+    )
+    for k, v in extra.items():
+        setattr(record, k, v)
+    return record
+
+
+def test_nested_user_message_in_dict_is_redacted():
+    """Common shape: extra={"context": {"user_message": "..."}} must not leak."""
+    record = _make_record_with_extra(context={"user_message": "I have severe chest pain", "intent": "symptom_check"})
+    assert PIIRedactorFilter().filter(record) is True
+    assert record.context["user_message"] == "<REDACTED>"
+    assert record.context["intent"] == "symptom_check"
+
+
+def test_nested_user_message_in_list_of_dicts_is_redacted():
+    record = _make_record_with_extra(
+        items=[
+            {"user_message": "headache for 3 days"},
+            {"user_message": "back pain"},
+            {"safe": "ok"},
+        ]
+    )
+    assert PIIRedactorFilter().filter(record) is True
+    assert record.items[0]["user_message"] == "<REDACTED>"
+    assert record.items[1]["user_message"] == "<REDACTED>"
+    assert record.items[2]["safe"] == "ok"
+
+
+def test_redaction_respects_max_depth():
+    """Beyond _MAX_DEPTH levels, the filter stops descending."""
+    deep = {"l1": {"l2": {"l3": {"l4": {"user_message": "leaks past depth cap"}}}}}
+    record = _make_record_with_extra(payload=deep)
+    PIIRedactorFilter().filter(record)
+    # MAX_DEPTH=3 => l4 is depth 4, never visited; user_message at l4 stays unredacted.
+    assert record.payload["l1"]["l2"]["l3"]["l4"]["user_message"] == "leaks past depth cap"
+
+
+def test_redaction_at_max_depth_does_redact():
+    """Boundary check: a PII key sitting exactly at depth 3 is still redacted."""
+    record = _make_record_with_extra(payload={"l1": {"l2": {"user_message": "should be redacted"}}})
+    PIIRedactorFilter().filter(record)
+    assert record.payload["l1"]["l2"]["user_message"] == "<REDACTED>"
+
+
+def test_redaction_handles_self_referential_dict():
+    """A circular structure must not blow up the filter."""
+    cycle: dict = {"user_message": "leak"}
+    cycle["self"] = cycle
+    record = _make_record_with_extra(payload={"outer": cycle})
+    # Must not raise (RecursionError, etc.)
+    assert PIIRedactorFilter().filter(record) is True
+    assert cycle["user_message"] == "<REDACTED>"
+
+
+def test_redaction_does_not_alter_primitive_extras():
+    """Non-container extras (str, int, float, bool, None) must pass through untouched."""
+    record = _make_record_with_extra(
+        duration_ms=42.5,
+        intent_category="symptom_check",
+        ok=True,
+        nothing=None,
+    )
+    PIIRedactorFilter().filter(record)
+    assert record.duration_ms == 42.5
+    assert record.intent_category == "symptom_check"
+    assert record.ok is True
+    assert record.nothing is None
+
+
+def test_redaction_respects_node_budget():
+    """Hostile records with thousands of keys are truncated by the node budget."""
+    # Build a wide dict that overflows _MAX_NODES (1000).
+    wide = {f"k{i}": {"user_message": f"leak{i}"} for i in range(2000)}
+    record = _make_record_with_extra(payload=wide)
+    PIIRedactorFilter().filter(record)
+    # Some entries get redacted (within budget), some don't — but the filter doesn't crash.
+    redacted_count = sum(1 for v in wide.values() if v["user_message"] == "<REDACTED>")
+    assert redacted_count > 0  # budget allowed at least one redaction
+    # The exact count depends on traversal order; the contract is "no crash, partial coverage OK".
