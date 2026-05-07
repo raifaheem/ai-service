@@ -287,18 +287,31 @@ _CORE_OBFUSCATION = {
 
 # Per-character confusable group used by _flex (Cyrillic ↔ Latin lookalikes).
 _FLEX_CONFUSABLES = {
-    "а": "аaА", "a": "аaА",
-    "е": "еeЕ", "e": "еeЕ",
-    "о": "оoО", "o": "оoО",
-    "с": "сcС", "c": "сcС", "s": "сcСsS",  # Latin 's' added — visually close
-    "х": "хxХ", "x": "хxХ",
-    "р": "рpР", "p": "рpР",
-    "у": "уyУ", "y": "уyУ",
-    "к": "кkК", "k": "кkК",
-    "н": "нnН", "n": "нnН",
-    "м": "мmМ", "m": "мmМ",
-    "т": "тtТ", "t": "тtТ",
-    "и": "иiИ", "i": "иiИ",
+    "а": "аaА",
+    "a": "аaА",
+    "е": "еeЕ",
+    "e": "еeЕ",
+    "о": "оoО",
+    "o": "оoО",
+    "с": "сcС",
+    "c": "сcС",
+    "s": "сcСsS",  # Latin 's' added — visually close
+    "х": "хxХ",
+    "x": "хxХ",
+    "р": "рpР",
+    "p": "рpР",
+    "у": "уyУ",
+    "y": "уyУ",
+    "к": "кkК",
+    "k": "кkК",
+    "н": "нnН",
+    "n": "нnН",
+    "м": "мmМ",
+    "m": "мmМ",
+    "т": "тtТ",
+    "t": "тtТ",
+    "и": "иiИ",
+    "i": "иiИ",
 }
 
 
@@ -322,9 +335,7 @@ def _flex(seed: str) -> str:
 # --- Compilation ---
 
 
-def _compile_seeds(category: str, locale_hit: str, seeds: list[str]) -> list[
-    tuple[str, str, str, re.Pattern[str]]
-]:
+def _compile_seeds(category: str, locale_hit: str, seeds: list[str]) -> list[tuple[str, str, str, re.Pattern[str]]]:
     out: list[tuple[str, str, str, re.Pattern[str]]] = []
     for i, seed in enumerate(seeds):
         pat = re.compile(_LB + seed + _RB, re.IGNORECASE)
@@ -401,9 +412,7 @@ def detect_sensitive_topic(message: str) -> SensitiveMatch | None:
                 "sensitive_topic.match",
                 extra={"category": category, "locale_hit": effective_locale_hit, "pattern_id": pid},
             )
-            return SensitiveMatch(
-                category=category, locale_hit=effective_locale_hit, pattern_id=pid
-            )
+            return SensitiveMatch(category=category, locale_hit=effective_locale_hit, pattern_id=pid)
 
     # Pass 3: flex over core list.
     for category, pid, pat in _PATTERNS_FLEX:

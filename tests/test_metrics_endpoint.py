@@ -14,6 +14,12 @@ def mock_redis():
     r = AsyncMock()
     r.ping = AsyncMock(return_value=True)
     r.keys = AsyncMock(return_value=["key1", "key2", "key3"])
+    # Circuit breaker reads state via hgetall on /metrics; if it raises, the
+    # /metrics handler swallows the error and never sets the gauge, which makes
+    # the `healthai_circuit_breaker_state` series invisible to the scrape.
+    r.hgetall = AsyncMock(return_value={})
+    r.hset = AsyncMock(return_value=1)
+    r.expire = AsyncMock(return_value=True)
     return r
 
 

@@ -14,6 +14,9 @@ def _base_prod_env() -> dict[str, str]:
         "SERVICE_TOKEN": "a-strong-random-token-xyz",
         "REDIS_URL": "redis://:secret@redis:6379/0",
         "QDRANT_URL": "http://qdrant:6333",
+        # ALLOWED_ORIGINS defaults to "*" on Settings, which prod-safety rejects.
+        # Tests that want to exercise the "*" path override this explicitly.
+        "ALLOWED_ORIGINS": "https://app.example.com",
         # Clear any JWT_PUBLIC_KEY the dev .env might bleed in — the base prod
         # config does not enable JWT auth. Tests that want JWT enabled set the
         # key + audience + issuer explicitly.
