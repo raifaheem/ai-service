@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.services.content_safety import SENSITIVE_REFUSAL, detect_sensitive_topic
+from app.services.content_safety import SENSITIVE_REFUSAL, detect_sensitive_topic, screen_response
 
 
 # --------------- Unit tests on detect_sensitive_topic ---------------
@@ -69,6 +69,14 @@ SAFE_MEDICAL = [
     # Self-harm — handled by mental_health, not sensitive_blocked
     "у меня суицидальные мысли",
     "I'm thinking about hurting myself",
+    # Regression: bare punctuation runs must NOT match the flex pass.
+    # Each flex seed position accepts a letter OR a symbol in [*.-_], so a
+    # 4-char "...." would otherwise match the 4-char "porn"/"fuck" seeds.
+    "Хорошо, подождите...",
+    "Wait a moment....",
+    "***",
+    "_-_-",
+    ". . . .",
 ]
 
 
@@ -98,6 +106,48 @@ class TestDetectSensitiveUnit:
         assert detect_sensitive_topic("у меня суицидальные мысли") is None
         assert detect_sensitive_topic("I want to hurt myself") is None
         assert detect_sensitive_topic("я хочу покончить с жизнью") is None
+
+
+# --------------- Post-LLM response screening ---------------
+
+
+# Reported regression (May 2026): the model paraphrased the standard
+# sleep-hygiene line "bed for sleep and sex" verbatim from training data /
+# knowledge base. Even after the KB was cleaned, the LLM can still emit the
+# word from parametric knowledge — so we screen the *output* the same way we
+# screen the input.
+LEAKED_RESPONSES = [
+    # The exact regression payload from the reported screenshot.
+    "Используйте кровать только для сна (и секса) — не работайте и не смотрите телевизор в постели.",
+    "Bed for sleep only (and sex), nothing else.",
+    # Another sleep-hygiene phrasing the model occasionally produces.
+    "Standard sleep hygiene says intercourse is the only other allowed bed activity.",
+    # Cross-script obfuscation should not bypass post-screen either.
+    "Используйте кровать только для сна (и сeкса).",  # Latin 'e'
+]
+
+
+CLEAN_RESPONSES = [
+    # Normal sleep advice with the bed-for-sleep idea but no banned word.
+    "Используйте кровать только для сна — не работайте и не смотрите телевизор в постели.",
+    "Bed is for sleeping. Avoid watching TV or working in bed.",
+    # Self-harm answer — must NOT be classified as sensitive (mental_health flow).
+    "Если у вас суицидальные мысли, пожалуйста, позвоните на линию доверия 1416.",
+    # Normal headache/cold guidance.
+    "Отдых, обильное питьё и парацетамол могут облегчить симптомы простуды.",
+]
+
+
+class TestScreenResponse:
+    @pytest.mark.parametrize("answer", LEAKED_RESPONSES)
+    def test_leaked_response_caught(self, answer):
+        m = screen_response(answer)
+        assert m is not None, f"Post-LLM screen failed to catch: {answer!r}"
+        assert m.category == "sexual"
+
+    @pytest.mark.parametrize("answer", CLEAN_RESPONSES)
+    def test_clean_response_passes(self, answer):
+        assert screen_response(answer) is None, f"False positive on safe answer: {answer!r}"
 
 
 # --------------- /v1/chat sync ---------------

@@ -13,7 +13,7 @@ International guidelines (CDC, NHS, AASM) rank **cognitive-behavioral therapy fo
 ## Sleep hygiene principles
 
 - **Consistent wake time** — the most powerful anchor of circadian rhythm. Get up at the same time every day, even on weekends, even after a bad night.
-- **Bed is for sleep only** (and sex). Don't work, eat, or watch shows in bed. This restores the "bed = sleep" association.
+- **Bed is for sleep only.** Don't work, eat, or watch shows in bed. This restores the "bed = sleep" association.
 - **If you can't fall asleep in 20 minutes, get up.** Go to another room, do something boring in dim light (a paper book, simple handiwork). Return to bed only when you feel sleepy.
 - **Naps** limited to 20–30 minutes, before 3 PM.
 - **Caffeine** — last cup no later than 8 hours before bed. Caffeine has a 5–6 hour half-life.

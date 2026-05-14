@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 from .routers.articles import router as articles_router
 from .routers.chat import router as chat_router
 from .routers.conversations import router as conv_router
+from .routers.dev_ui import router as dev_ui_router
 from .routers.rag import router as rag_router
 from .routers.triage import router as triage_router
 from .services.intent_embeddings import initialize_exemplar_embeddings
@@ -284,3 +285,4 @@ app.include_router(triage_router)
 
 if settings.enable_dev_routes:
     app.include_router(rag_router)
+    app.include_router(dev_ui_router)

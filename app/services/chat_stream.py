@@ -38,8 +38,10 @@ from openai import (
 from ..context import get_request_id
 from ..lifecycle import is_shutting_down, register_stream
 from ..services import memory
+from ..services.audit import EVENT_CHAT_SENSITIVE_BLOCKED_POST, record_audit_event
 from ..services.circuit_breaker import DEGRADED_MESSAGES
 from ..services.content_filter import check_response_safety
+from ..services.content_safety import SENSITIVE_REFUSAL, screen_response
 from ..services.intent import IntentResult
 from ..services.llm import stream_health_answer
 from ..services.openai_call_guard import OpenAIUnavailable
@@ -206,6 +208,50 @@ async def chat_event_generator(ctx: StreamContext, request: Request) -> AsyncGen
         # Breaker recorded success inside `stream_health_answer`'s guard.
         raw_answer = "".join(parts).strip()
         raw_answer, _filters = check_response_safety(raw_answer, locale=ctx.locale)
+
+        # Post-LLM screen. The deltas have already been streamed to the client,
+        # so the user has visually seen the leak in flight — but the final
+        # event below replaces the answer with the refusal and the persisted
+        # turn in Redis is the refusal too. The browser dev-UI listens for
+        # `final.answer != accumulated_text` and re-renders the bubble.
+        leaked = screen_response(raw_answer)
+        if leaked is not None:
+            raw_answer = SENSITIVE_REFUSAL.get(ctx.locale, SENSITIVE_REFUSAL["ru"])
+            answer_to_user = raw_answer
+            finish_reason = "sensitive_blocked_post"
+            await _persist_stream_turns(ctx, raw_answer)
+            await record_audit_event(
+                EVENT_CHAT_SENSITIVE_BLOCKED_POST,
+                user_id=ctx.user_id,
+                conversation_id=ctx.conversation_id,
+                request_id=get_request_id(),
+                locale=ctx.locale,
+                sensitive_category=leaked.category,
+                locale_hit=leaked.locale_hit,
+                pattern_id=leaked.pattern_id,
+                intent_category=ctx.intent.category,
+            )
+            yield sse(
+                "final",
+                {
+                    "conversation_id": ctx.conversation_id,
+                    "answer": answer_to_user,
+                    "disclaimer": ctx.disclaimer,
+                    "model": model_name,
+                    "finish_reason": finish_reason,
+                    "usage": usage_payload,
+                    "rag_used": False,
+                    "rag_score": None,
+                    "sources": [],
+                    "intent": {
+                        "category": ctx.intent.category,
+                        "risk_level": ctx.intent.risk_level,
+                        "confidence": ctx.intent.confidence,
+                    },
+                },
+            )
+            return
+
         answer_to_user = raw_answer
         if ctx.disclaimer.lower() not in answer_to_user.lower():
             answer_to_user = f"{answer_to_user}\n\n{ctx.disclaimer}"

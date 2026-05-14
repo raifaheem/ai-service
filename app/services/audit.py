@@ -54,6 +54,11 @@ EVENT_TRIAGE_INJECTION_BLOCKED = "triage.injection_blocked"
 EVENT_CHAT_SENSITIVE_BLOCKED = "chat.sensitive_blocked"
 EVENT_TRIAGE_SENSITIVE_BLOCKED = "triage.sensitive_blocked"
 EVENT_ARTICLE_SENSITIVE_BLOCKED = "article.sensitive_blocked"
+# Post-LLM screening: model output contained a banned token despite the input
+# passing the pre-LLM gate. Distinct event so SREs can spot prompt-leak drift
+# (it should be near-zero — non-zero means the LLM is paraphrasing past the
+# prompt's "never write this word" rule and we may need to harden the prompt).
+EVENT_CHAT_SENSITIVE_BLOCKED_POST = "chat.sensitive_blocked_post"
 
 
 async def record_audit_event(

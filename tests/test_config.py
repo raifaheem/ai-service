@@ -1,6 +1,7 @@
 """Tests for app.config.Settings and its production-safety validation."""
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import Settings
 
@@ -115,6 +116,50 @@ class TestProdSafety:
         monkeypatch.setenv("SERVICE_TOKEN", "test-token")
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         monkeypatch.setenv("ENABLE_DEV_ROUTES", "true")
+        Settings()  # no raise
+
+    @pytest.mark.parametrize("typo", ["prod", "PRODUCTION", "Production", "stg", "live", "prd"])
+    def test_app_env_typos_rejected_at_load(self, monkeypatch, typo):
+        # Strict Literal whitelist — any value other than dev/staging/production
+        # must fail at Settings construction. Previously these silently bypassed
+        # _validate_prod_safety.
+        monkeypatch.setenv("APP_ENV", typo)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("SERVICE_TOKEN", "test-token")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    @pytest.mark.parametrize("env", ["dev", "staging", "production"])
+    def test_app_env_canonical_values_accepted(self, monkeypatch, env):
+        for k, v in _base_prod_env().items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.setenv("APP_ENV", env)
+        Settings()  # no raise
+
+    @pytest.mark.parametrize("placeholder", ["ci-smoke", "smoke", "ci"])
+    def test_ci_smoke_token_rejected_in_prod(self, monkeypatch, placeholder):
+        # CI-shaped tokens were leaking through the old blocklist. Now rejected.
+        env = _base_prod_env()
+        env["SERVICE_TOKEN"] = placeholder
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        with pytest.raises(ValueError, match="SERVICE_TOKEN"):
+            Settings()
+
+    @pytest.mark.parametrize("short", ["abc", "fifteenchars123", "a" * 15])
+    def test_short_service_token_rejected_in_prod(self, monkeypatch, short):
+        env = _base_prod_env()
+        env["SERVICE_TOKEN"] = short
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        with pytest.raises(ValueError, match="SERVICE_TOKEN"):
+            Settings()
+
+    def test_service_token_at_min_length_accepted(self, monkeypatch):
+        env = _base_prod_env()
+        env["SERVICE_TOKEN"] = "a" * 16
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
         Settings()  # no raise
 
 

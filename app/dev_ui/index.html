@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>health-ai dev console</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161922;
+    --panel-2: #1d2230;
+    --border: #2a3142;
+    --text: #e5e9f0;
+    --muted: #8b94a7;
+    --accent: #4f8cff;
+    --accent-2: #6aa9ff;
+    --user: #1f3a6e;
+    --assistant: #1d2230;
+    --error: #6e1f1f;
+    --warn: #6e571f;
+    --ok: #1f6e3a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  body { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 16px; display: flex; align-items: center; gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header .ver { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header button, header select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  header button:hover { border-color: var(--accent); }
+  header button:disabled { opacity: 0.5; cursor: not-allowed; }
+  header label { color: var(--muted); font-size: 12px; margin-right: 4px; }
+
+  details.settings { background: var(--panel); border-bottom: 1px solid var(--border); padding: 0 16px; }
+  details.settings > summary { padding: 8px 0; cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
+  details.settings .grid {
+    display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px;
+    padding: 8px 0 14px;
+  }
+  details.settings input {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 6px 8px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px; width: 100%;
+  }
+  details.settings .hint { grid-column: 2; color: var(--muted); font-size: 11px; margin-top: -4px; }
+
+  #banner {
+    display: none; padding: 10px 16px; font-size: 13px;
+    background: var(--error); color: #ffe4e4; border-bottom: 1px solid #8a2c2c;
+  }
+  #banner.warn { background: var(--warn); color: #fff5d4; border-bottom-color: #8a7028; }
+  #banner.show { display: block; }
+  #banner button {
+    background: transparent; color: inherit; border: 1px solid currentColor;
+    border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: 8px;
+  }
+
+  main {
+    flex: 1; overflow-y: auto; padding: 16px; max-width: 980px;
+    width: 100%; margin: 0 auto;
+  }
+  .empty {
+    color: var(--muted); text-align: center; padding: 60px 20px;
+    line-height: 1.7;
+  }
+  .empty code {
+    background: var(--panel); padding: 2px 6px; border-radius: 3px;
+    font-family: ui-monospace, monospace; font-size: 12px; color: var(--accent-2);
+  }
+
+  .turn { margin-bottom: 14px; display: flex; flex-direction: column; gap: 4px; }
+  .turn.user { align-items: flex-end; }
+  .turn.assistant { align-items: flex-start; }
+  .bubble {
+    max-width: 78%; padding: 10px 14px; border-radius: 12px;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .turn.user .bubble { background: var(--user); border-bottom-right-radius: 4px; }
+  .turn.assistant .bubble { background: var(--assistant); border-bottom-left-radius: 4px; }
+  .turn.assistant .bubble.streaming::after {
+    content: "▍"; color: var(--accent-2); animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .turn.assistant .bubble.refusal { background: #3a2326; border: 1px solid #6e1f1f; }
+
+  .meta-toggle {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 11px; cursor: pointer; padding: 2px 0;
+    font-family: inherit;
+  }
+  .meta-toggle:hover { color: var(--accent-2); }
+  .meta-panel {
+    display: none; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px; margin-top: 4px; font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    max-width: 100%; overflow-x: auto;
+  }
+  .meta-panel.open { display: block; }
+  .meta-panel .row { display: flex; gap: 8px; margin: 2px 0; }
+  .meta-panel .k { color: var(--muted); min-width: 130px; flex-shrink: 0; }
+  .meta-panel .v { color: var(--text); }
+  .meta-panel .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    background: var(--panel-2); color: var(--accent-2); font-size: 11px;
+    margin-right: 4px;
+  }
+  .meta-panel .tag.fallback { color: #ffb86b; }
+  .meta-panel .tag.bad { background: var(--error); color: #ffe4e4; }
+  .meta-panel ol { margin: 4px 0; padding-left: 18px; }
+  .meta-panel li { margin: 2px 0; }
+
+  footer {
+    border-top: 1px solid var(--border); background: var(--panel);
+    padding: 10px 16px; display: flex; gap: 8px; align-items: flex-end;
+  }
+  footer textarea {
+    flex: 1; min-height: 40px; max-height: 200px; resize: vertical;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font-family: inherit; font-size: 14px;
+    line-height: 1.4;
+  }
+  footer textarea:focus { outline: none; border-color: var(--accent); }
+  footer button {
+    background: var(--accent); color: white; border: none; border-radius: 8px;
+    padding: 10px 18px; font-size: 14px; font-weight: 500; cursor: pointer;
+    font-family: inherit;
+  }
+  footer button:hover:not(:disabled) { background: var(--accent-2); }
+  footer button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .hint-corner { color: var(--muted); font-size: 11px; padding: 4px 16px; background: var(--panel); border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>health-ai dev console</h1>
+  <span class="ver">v1 / chat</span>
+  <span class="spacer"></span>
+  <label for="locale">locale</label>
+  <select id="locale">
+    <option value="ru">ru</option>
+    <option value="en">en</option>
+    <option value="kk">kk</option>
+  </select>
+  <button id="newChat" title="Reset conversation_id, keep settings">New chat</button>
+  <button id="copyAll" title="Copy chat + metadata as Markdown for screenshot/issue">Copy as Markdown</button>
+</header>
+
+<details class="settings" id="settings">
+  <summary>Auth settings (saved in localStorage on this browser)</summary>
+  <div class="grid">
+    <label for="token">SERVICE_TOKEN</label>
+    <input id="token" type="password" placeholder="paste from .env.docker SERVICE_TOKEN" autocomplete="off">
+    <label for="userId">X-User-Id</label>
+    <input id="userId" type="text" placeholder="dev-ui-local">
+    <div></div>
+    <div class="hint">First request will return 401 until SERVICE_TOKEN is set. Token never leaves this browser.</div>
+  </div>
+</details>
+
+<div id="banner"></div>
+
+<main id="chat">
+  <div class="empty" id="empty">
+    health-ai dev console — manual playground for the chat pipeline.
+    <br><br>
+    Set <code>SERVICE_TOKEN</code> in <i>Auth settings</i> above (paste from <code>.env.docker</code>),
+    pick a locale, and start typing.
+    <br><br>
+    Each assistant reply has a <code>show details</code> link revealing
+    intent, RAG sources, finish_reason and request_id — useful for screenshotting regressions.
+  </div>
+</main>
+
+<footer>
+  <textarea id="input" rows="2" placeholder="Type a message. Enter to send, Shift+Enter for new line."></textarea>
+  <button id="send">Send</button>
+</footer>
+
+<div class="hint-corner">
+  <span id="status">idle</span>
+  <span style="float:right">conversation_id: <code id="convId">—</code></span>
+</div>
+
+<script>
+"use strict";
+
+const LS = {
+  prefix: "healthai.devui.",
+  get(k, d) { const v = localStorage.getItem(this.prefix + k); return v == null ? d : v; },
+  set(k, v) { localStorage.setItem(this.prefix + k, v); },
+  del(k)    { localStorage.removeItem(this.prefix + k); },
+};
+
+const els = {
+  chat:     document.getElementById("chat"),
+  empty:    document.getElementById("empty"),
+  input:    document.getElementById("input"),
+  send:     document.getElementById("send"),
+  locale:   document.getElementById("locale"),
+  token:    document.getElementById("token"),
+  userId:   document.getElementById("userId"),
+  newChat:  document.getElementById("newChat"),
+  copyAll:  document.getElementById("copyAll"),
+  banner:   document.getElementById("banner"),
+  status:   document.getElementById("status"),
+  convId:   document.getElementById("convId"),
+  settings: document.getElementById("settings"),
+};
+
+// ---- State persisted in localStorage --------------------------------------
+els.token.value  = LS.get("service_token", "");
+els.userId.value = LS.get("user_id", "dev-ui-local");
+els.locale.value = LS.get("locale", "ru");
+let conversationId = LS.get("conversation_id", "") || null;
+updateConvLabel();
+
+// Auto-open settings if no token yet.
+if (!els.token.value) els.settings.open = true;
+
+els.token.addEventListener("input",  () => LS.set("service_token", els.token.value));
+els.userId.addEventListener("input", () => LS.set("user_id",       els.userId.value || "dev-ui-local"));
+els.locale.addEventListener("change",() => LS.set("locale",        els.locale.value));
+
+// ---- Conversation log (kept for "Copy as Markdown") -----------------------
+const log = []; // [{ role: "user"|"assistant", text, meta? }]
+
+// ---- Banner ---------------------------------------------------------------
+function showBanner(msg, kind = "error") {
+  els.banner.className = "show" + (kind === "warn" ? " warn" : "");
+  els.banner.innerHTML = "";
+  els.banner.append(document.createTextNode(msg));
+  const close = document.createElement("button");
+  close.textContent = "dismiss";
+  close.onclick = () => els.banner.classList.remove("show");
+  els.banner.append(close);
+}
+function clearBanner() { els.banner.classList.remove("show"); }
+
+function setStatus(s) { els.status.textContent = s; }
+function updateConvLabel() { els.convId.textContent = conversationId || "—"; }
+
+// ---- Markdown copy --------------------------------------------------------
+els.copyAll.onclick = async () => {
+  const lines = [`# health-ai dev session`, ``, `- locale: ${els.locale.value}`, `- conversation_id: ${conversationId || "—"}`, ``];
+  for (const t of log) {
+    lines.push(`## ${t.role}`);
+    lines.push("");
+    lines.push(t.text || "");
+    lines.push("");
+    if (t.meta) {
+      lines.push("```");
+      lines.push(JSON.stringify(t.meta, null, 2));
+      lines.push("```");
+      lines.push("");
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setStatus("copied " + log.length + " turns");
+  } catch (e) {
+    showBanner("clipboard write failed: " + e.message, "warn");
+  }
+};
+
+// ---- New chat -------------------------------------------------------------
+els.newChat.onclick = () => {
+  conversationId = null;
+  LS.del("conversation_id");
+  log.length = 0;
+  els.chat.innerHTML = "";
+  els.chat.append(els.empty);
+  els.empty.style.display = "";
+  updateConvLabel();
+  clearBanner();
+  setStatus("new chat");
+};
+
+// ---- Render helpers -------------------------------------------------------
+function renderUserTurn(text) {
+  const t = document.createElement("div");
+  t.className = "turn user";
+  const b = document.createElement("div");
+  b.className = "bubble";
+  b.textContent = text;
+  t.append(b);
+  els.chat.append(t);
+  scrollToBottom();
+}
+
+function renderAssistantTurn() {
+  const t = document.createElement("div");
+  t.className = "turn assistant";
+  const b = document.createElement("div");
+  b.className = "bubble streaming";
+  t.append(b);
+
+  const toggle = document.createElement("button");
+  toggle.className = "meta-toggle";
+  toggle.textContent = "show details";
+  t.append(toggle);
+
+  const meta = document.createElement("div");
+  meta.className = "meta-panel";
+  t.append(meta);
+
+  toggle.onclick = () => {
+    meta.classList.toggle("open");
+    toggle.textContent = meta.classList.contains("open") ? "hide details" : "show details";
+  };
+
+  els.chat.append(t);
+  scrollToBottom();
+  return { bubble: b, meta };
+}
+
+function scrollToBottom() { els.chat.scrollTop = els.chat.scrollHeight; }
+
+function renderMeta(panel, finalEvent) {
+  const intent = finalEvent.intent || {};
+  const sources = finalEvent.sources || [];
+  const usage = finalEvent.usage || {};
+  const fr = finalEvent.finish_reason || "stop";
+  const blocked = fr !== "stop";
+
+  const rows = [];
+  rows.push(["finish_reason", `<span class="tag ${blocked ? "bad" : ""}">${fr}</span>`]);
+  rows.push(["intent.category", `<span class="tag">${esc(intent.category)}</span> conf=${(intent.confidence ?? "?").toString()} risk=${esc(intent.risk_level)}`]);
+  rows.push(["rag_used", `${finalEvent.rag_used ? "true" : "false"}${finalEvent.rag_score != null ? "  score=" + finalEvent.rag_score.toFixed(3) : ""}`]);
+  rows.push(["model", esc(finalEvent.model)]);
+  rows.push(["request_id", `<code>${esc(finalEvent.request_id)}</code>`]);
+  rows.push(["tokens", `prompt=${usage.prompt_tokens ?? "?"} completion=${usage.completion_tokens ?? "?"}`]);
+
+  let html = rows.map(([k, v]) => `<div class="row"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  if (sources.length) {
+    html += `<div class="row"><div class="k">sources (${sources.length})</div><div class="v"><ol>`;
+    html += sources.map(s => {
+      const fb = s.is_fallback ? `<span class="tag fallback">fallback</span>` : "";
+      const sc = s.score != null ? `<span class="tag">${s.score.toFixed(3)}</span>` : "";
+      return `<li>${fb}${sc}${esc(s.title || s.article_id || "?")}</li>`;
+    }).join("");
+    html += "</ol></div></div>";
+  }
+  panel.innerHTML = html;
+}
+
+function esc(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---- SSE parsing ----------------------------------------------------------
+async function streamChat(message) {
+  const token = els.token.value.trim();
+  const userId = els.userId.value.trim() || "dev-ui-local";
+  if (!token) {
+    showBanner("SERVICE_TOKEN is empty — open Auth settings and paste it from .env.docker.");
+    els.settings.open = true;
+    return;
+  }
+
+  els.empty.style.display = "none";
+  renderUserTurn(message);
+  log.push({ role: "user", text: message });
+
+  const turn = renderAssistantTurn();
+  let assistantText = "";
+  log.push({ role: "assistant", text: "" });
+  const logEntry = log[log.length - 1];
+
+  els.send.disabled = true;
+  setStatus("streaming…");
+  clearBanner();
+
+  const body = { message, locale: els.locale.value };
+  if (conversationId) body.conversation_id = conversationId;
+
+  let resp;
+  try {
+    resp = await fetch("/v1/chat/stream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "X-Service-Token": token,
+        "X-User-Id": userId,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    finishAssistantBubble(turn);
+    showBanner("Network error: " + e.message);
+    setStatus("error");
+    els.send.disabled = false;
+    return;
+  }
+
+  if (!resp.ok || !resp.body) {
+    finishAssistantBubble(turn);
+    let detail = "";
+    try { detail = (await resp.json())?.detail || ""; } catch {}
+    showBanner(`HTTP ${resp.status}${detail ? " — " + detail : ""}`);
+    setStatus("error " + resp.status);
+    els.send.disabled = false;
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  let lastFinal = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+
+      let evName = "message";
+      const dataLines = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) evName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^\s/, ""));
+      }
+      if (!dataLines.length) continue;
+      let data;
+      try { data = JSON.parse(dataLines.join("\n")); }
+      catch { continue; }
+
+      if (evName === "meta") {
+        if (data.conversation_id) {
+          conversationId = data.conversation_id;
+          LS.set("conversation_id", conversationId);
+          updateConvLabel();
+        }
+      } else if (evName === "delta") {
+        assistantText += data.text || "";
+        turn.bubble.textContent = assistantText;
+        scrollToBottom();
+      } else if (evName === "final") {
+        lastFinal = data;
+      } else if (evName === "error") {
+        showBanner(`stream error: ${data.code || "?"} — ${data.message || ""}`);
+        setStatus("error");
+      }
+    }
+  }
+
+  finishAssistantBubble(turn);
+  if (lastFinal) {
+    if (lastFinal.answer && lastFinal.answer !== assistantText) {
+      // Some refusals skip delta and only ship the final answer.
+      assistantText = lastFinal.answer;
+      turn.bubble.textContent = assistantText;
+    }
+    if (lastFinal.finish_reason && lastFinal.finish_reason !== "stop") {
+      turn.bubble.classList.add("refusal");
+    }
+    renderMeta(turn.meta, lastFinal);
+    setStatus(`done · ${lastFinal.finish_reason || "stop"}`);
+  } else {
+    setStatus("done · no final event");
+  }
+  logEntry.text = assistantText;
+  logEntry.meta = lastFinal || undefined;
+  els.send.disabled = false;
+}
+
+function finishAssistantBubble(turn) {
+  turn.bubble.classList.remove("streaming");
+}
+
+// ---- Send wiring ----------------------------------------------------------
+async function onSend() {
+  const text = els.input.value.trim();
+  if (!text) return;
+  els.input.value = "";
+  els.input.style.height = "auto";
+  await streamChat(text);
+  els.input.focus();
+}
+
+els.send.onclick = onSend;
+els.input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    onSend();
+  }
+});
+
+</script>
+</body>
+</html>

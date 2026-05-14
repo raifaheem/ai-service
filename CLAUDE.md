@@ -93,6 +93,7 @@ Same pipeline, JSON vs SSE (`meta`/`delta`/`final`/`error`; every SSE event carr
 - **RAG chunks**: every chunk's `payload.language` must be set — search filter relies on it.
 - **Endpoint contracts**: when changing a route, update decorator `summary`/`description`/`responses`, Pydantic `json_schema_extra` example, and [API_CONTRACT.md](API_CONTRACT.md) — all three must stay in sync.
 - **Service token rotation**: `SERVICE_TOKEN` is comma-separated; any listed token is valid.
+- **Dev UI**: `http://localhost:8001/dev-ui` — single-page chat console for manual LLM behavior testing (SSE streaming, conversation memory, intent/RAG/finish_reason metadata for screenshots). Gated behind `ENABLE_DEV_ROUTES=true` and **never mounted in prod**. Source: [app/dev_ui/index.html](app/dev_ui/index.html), router: [app/routers/dev_ui.py](app/routers/dev_ui.py). The dev compose file bind-mounts `./app:/app/app:ro` so HTML edits land on browser refresh without `up --build`.
 - **PII / logging**: medical content (user messages, profile details, conversation turns, LLM answers) MUST NOT appear in application logs. Only log identifiers (`request_id`, `conversation_id`, `user_id`, `intent.category`) and metadata (`duration_ms`, token counts). A `PIIRedactorFilter` in [logging_config.py](app/logging_config.py) catches accidental leaks via `extra={"user_message": ...}` and friends — extend `_REDACT_KEYS` if new PII fields appear. For debugging that needs payload context, prefer tracing spans (which don't persist by default) over logs.
 
 ### Knowledge base

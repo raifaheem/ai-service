@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -5,7 +7,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_env: str = Field(default="dev", alias="APP_ENV")
+    # Strict whitelist: any other value (e.g. "prod", "PRODUCTION", "stg") raises
+    # ValidationError at startup. Previously this was a free-form str — a typo
+    # like APP_ENV=prod silently bypassed every prod-safety guard below.
+    app_env: Literal["dev", "staging", "production"] = Field(default="dev", alias="APP_ENV")
     app_name: str = Field(default="health-ai-service", alias="APP_NAME")
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     allowed_origins: str = Field(default="*", alias="ALLOWED_ORIGINS")
@@ -58,8 +63,24 @@ class Settings(BaseSettings):
     log_format: str = Field(default="text", alias="LOG_FORMAT")
 
     _SERVICE_TOKEN_PLACEHOLDERS = frozenset(
-        {"", "change-me-in-prod", "changeme", "dev", "test", "test-token", "placeholder"}
+        {
+            "",
+            "change-me-in-prod",
+            "changeme",
+            "dev",
+            "test",
+            "test-token",
+            "placeholder",
+            # CI smoke-test fixtures — these were leaking into prod-shaped runs
+            # because the smoke step in deploy.yml used a literal "ci-smoke" token.
+            "ci-smoke",
+            "smoke",
+            "ci",
+        }
     )
+    # Tokens shorter than this clearly aren't 32+ random bytes. Caught here so
+    # operators can't paste a half-pasted secret without noticing.
+    _SERVICE_TOKEN_MIN_LENGTH = 16
 
     @model_validator(mode="after")
     def _validate_prod_safety(self):
@@ -101,6 +122,13 @@ class Settings(BaseSettings):
         if bad:
             raise ValueError(
                 f"SERVICE_TOKEN contains placeholder value(s): {bad}. " "Generate a strong random token for production."
+            )
+        too_short = [t for t in tokens if len(t) < self._SERVICE_TOKEN_MIN_LENGTH]
+        if too_short:
+            raise ValueError(
+                f"SERVICE_TOKEN entries must be at least {self._SERVICE_TOKEN_MIN_LENGTH} characters in production "
+                f"(got entries of length {[len(t) for t in too_short]}). "
+                "Generate via `openssl rand -hex 32` or equivalent."
             )
 
         # S1: when JWT auth is configured (public key set), require both audience

@@ -17,12 +17,13 @@ from ..services.audit import (
     EVENT_CHAT_ANSWER,
     EVENT_CHAT_INJECTION_BLOCKED,
     EVENT_CHAT_SENSITIVE_BLOCKED,
+    EVENT_CHAT_SENSITIVE_BLOCKED_POST,
     record_audit_event,
 )
 from ..services.chat_stream import StreamContext, chat_event_generator, sse
 from ..services.circuit_breaker import DEGRADED_MESSAGES, openai_breaker
 from ..services.content_filter import check_response_safety
-from ..services.content_safety import SENSITIVE_REFUSAL, detect_sensitive_topic
+from ..services.content_safety import SENSITIVE_REFUSAL, detect_sensitive_topic, screen_response
 from ..services.i18n import get_disclaimer, get_emergency_phone, get_prompt_addon, normalize_locale
 from ..services.intent import IntentResult, classify_intent
 from ..services.llm import generate_health_answer
@@ -514,6 +515,41 @@ async def chat(
 
     # Content safety filter
     raw_answer, applied_filters = check_response_safety(answer, locale=locale)
+
+    # Post-LLM sensitive-topic screen — defense-in-depth against the LLM
+    # paraphrasing a banned word (e.g. "bed for sleep and sex" sleep-hygiene
+    # trope) past the prompt-level prohibition. Same regex stack as the input
+    # gate, so a word blocked on input stays blocked on output.
+    leaked = screen_response(raw_answer)
+    if leaked is not None:
+        raw_answer = SENSITIVE_REFUSAL.get(locale, SENSITIVE_REFUSAL["ru"])
+        answer_to_user = raw_answer
+        await _persist_turns(
+            conversation_id,
+            user_message,
+            raw_answer,
+            user_id,
+            topic="blocked_sensitive_post",
+            turn_count=len(history) + 2,
+        )
+        await record_audit_event(
+            EVENT_CHAT_SENSITIVE_BLOCKED_POST,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=get_request_id(),
+            locale=locale,
+            sensitive_category=leaked.category,
+            locale_hit=leaked.locale_hit,
+            pattern_id=leaked.pattern_id,
+            intent_category=intent.category,
+        )
+        return ChatResponse(
+            answer=answer_to_user,
+            disclaimer=disclaimer,
+            conversation_id=conversation_id,
+            rag_used=False,
+        )
+
     if disclaimer.lower() not in raw_answer.lower():
         answer_to_user = f"{raw_answer}\n\n{disclaimer}"
     else:

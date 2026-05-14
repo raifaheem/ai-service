@@ -415,8 +415,12 @@ def detect_sensitive_topic(message: str) -> SensitiveMatch | None:
             return SensitiveMatch(category=category, locale_hit=effective_locale_hit, pattern_id=pid)
 
     # Pass 3: flex over core list.
+    # Reject all-symbol matches: every char of a flex seed can be a letter OR a
+    # symbol in [*.-_], so a bare "...." matches the 4-char "porn" pattern.
+    # Real obfuscation always retains at least one letter (s*e*x, с-е-к-с).
     for category, pid, pat in _PATTERNS_FLEX:
-        if pat.search(message):
+        m = pat.search(message)
+        if m and any(c.isalpha() for c in m.group()):
             logger.info(
                 "sensitive_topic.match",
                 extra={"category": category, "locale_hit": "obfuscated", "pattern_id": pid},
@@ -424,3 +428,18 @@ def detect_sensitive_topic(message: str) -> SensitiveMatch | None:
             return SensitiveMatch(category=category, locale_hit="obfuscated", pattern_id=pid)
 
     return None
+
+
+def screen_response(answer: str) -> SensitiveMatch | None:
+    """Post-LLM screening — re-run the same pre-LLM filter against the model's reply.
+
+    Defense-in-depth for cases where the LLM mentions a banned word from
+    parametric knowledge or a leaked KB chunk despite explicit prompt
+    instructions (the "bed for sleep and sex" sleep-hygiene trope is the
+    canonical example). Re-uses the same regex stack as the input gate so a
+    word blocked on input stays blocked on output.
+
+    The hygiene rule from `detect_sensitive_topic` still applies — only
+    category + pattern_id are logged, never the matched text or the answer.
+    """
+    return detect_sensitive_topic(answer)

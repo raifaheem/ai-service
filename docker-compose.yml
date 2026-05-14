@@ -33,6 +33,12 @@ services:
     environment:
       REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
       QDRANT_URL: "http://qdrant:6333"
+    # Dev-only bind mount: edits in ./app/ (e.g. dev_ui/index.html) are visible
+    # inside the container after a browser refresh — no `up --build` needed.
+    # Read-only so the container can never write back to host. The prod overlay
+    # (docker-compose.prod.yml) does NOT replicate this mount.
+    volumes:
+      - ./app:/app/app:ro
     depends_on:
       redis:
         condition: service_healthy

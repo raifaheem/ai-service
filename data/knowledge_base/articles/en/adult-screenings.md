@@ -17,7 +17,6 @@ Screenings are tests and exams in people without symptoms — to catch disease w
 - **Lipid panel** — first check around 25–30; earlier with obesity, family diabetes, or known hypertension.
 - **HbA1c or fasting glucose** — with obesity, hypertension, family history of diabetes.
 - **Cervical screening (Pap test, HPV).** From age 21; schedule depends on prior results — every 3 to 5 years.
-- **STI screening** — with new partners, unprotected sex — HIV, syphilis, chlamydia, gonorrhea.
 
 ## 40–49 years
 

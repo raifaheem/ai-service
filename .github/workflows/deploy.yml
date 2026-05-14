@@ -46,10 +46,15 @@ jobs:
       - name: Smoke test built image
         run: |
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          # Smoke runs in APP_ENV=dev so we don't have to mint real prod-grade
+          # secrets (strong SERVICE_TOKEN, signed JWT key, audited origins) just
+          # to prove the image starts. _validate_prod_safety stays untested here
+          # by design — it has unit-test coverage in tests/.
+          SMOKE_TOKEN=$(openssl rand -hex 32)
           docker run -d --name smoke -p 8001:8001 \
-            -e APP_ENV=production \
-            -e OPENAI_API_KEY=ci-smoke \
-            -e SERVICE_TOKEN=ci-smoke \
+            -e APP_ENV=dev \
+            -e OPENAI_API_KEY=sk-ci-smoke-not-a-real-key \
+            -e SERVICE_TOKEN="$SMOKE_TOKEN" \
             -e ENABLE_DEV_ROUTES=false \
             "$IMAGE"
           for i in 1 2 3 4 5 6 7 8 9 10; do
