@@ -102,13 +102,18 @@ Curated Markdown under [data/knowledge_base/](data/knowledge_base/) + [manifest.
 
 ## Deployment
 
-- Multi-stage Dockerfile; runtime CMD is `gunicorn -k uvicorn.workers.UvicornWorker -w 4 --graceful-timeout 30`.
-- Prod = **overlay**: `docker-compose.yml` + `docker-compose.prod.yml` (not the prod file alone). `.env.production` is deploy-host only (gitignored).
-- Resource budget in prod overlay: redis 0.5 CPU / 512M, qdrant 1.5 CPU / 2G, ai 2.0 CPU / 1G. Revisit when the KB grows past ~100k chunks (qdrant memory is the first thing to run out).
-- `/health` → `ok|degraded` (Redis + Qdrant + circuit state); wire to liveness probes.
-- `/metrics` is **authenticated** via `X-Service-Token` or JWT (see [app/main.py](app/main.py) `/metrics` endpoint). In-cluster Prometheus scrapers must supply the token from a Kubernetes secret; from-internet scrapers are still rejected at the auth layer.
-- Release: push `vX.Y.Z` tag → [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds + pushes to GHCR. CI = [.github/workflows/ci.yml](.github/workflows/ci.yml) (test/lint/typecheck/security).
-- **On-call runbook:** [docs/RUNBOOK.md](docs/RUNBOOK.md) — common incidents (OpenAI down, Redis OOM, Qdrant restore, rate-limit storm, JWT rotation, startup failures).
+- Multi-stage Dockerfile; runtime CMD is `gunicorn -k uvicorn.workers.UvicornWorker -w 4 --graceful-timeout 30`. Image is **multi-arch** (linux/amd64 + linux/arm64) so prod can run on Oracle Cloud Free Tier (Ampere A1 ARM).
+- Prod = **overlay**: `docker-compose.yml` + `docker-compose.prod.yml` (not the prod file alone). `.env.production` is deploy-host only (gitignored). The prod overlay adds Caddy (reverse proxy + auto Let's Encrypt), Prometheus, Grafana, Alertmanager, and alertmanager-bot (Telegram bridge) — see [docker-compose.prod.yml](docker-compose.prod.yml). Image source is `ghcr.io/raifaheem/ai-service:${IMAGE_TAG}`; the deploy job exports `IMAGE_TAG=<tag>` before `docker compose pull/up`.
+- Resource budget in prod overlay: redis 0.5 CPU / 512M, qdrant 1.5 CPU / 2G, ai 2.0 CPU / 1G, caddy 0.3/128M, prometheus 0.5/512M, grafana 0.3/256M, alertmanager 0.2/128M, alertmanager-bot 0.1/64M. Total ≈ 5.4 CPU / 5G — fits comfortably in the Ampere A1 free tier (4 OCPU / 24GB).
+- `/health` → `ok|degraded` (Redis + Qdrant + circuit state); Caddy proxies it but the systemd unit also polls localhost:8001 for the post-deploy health gate.
+- `/metrics` is **authenticated** — accepts `X-Service-Token`, JWT, OR `Authorization: Bearer $METRICS_SCRAPE_TOKEN` (the last specifically for Prometheus, which can't send custom headers in scrape_configs). Rotate `METRICS_SCRAPE_TOKEN` separately from `SERVICE_TOKEN` so Laravel rotation doesn't break scrapes. See [app/main.py](app/main.py) `_metrics_auth`.
+- Release: push `vX.Y.Z` tag → [.github/workflows/deploy.yml](.github/workflows/deploy.yml) builds multi-arch + pushes to GHCR + SSHes into the Oracle VM and runs `git checkout $TAG && docker compose pull && up -d`, then polls `/health` (fails the CI run if status≠ok in 60s). Manual redeploy: `workflow_dispatch` with the tag name. CI = [.github/workflows/ci.yml](.github/workflows/ci.yml) (test/lint/typecheck/security).
+- **Three deploy paths**, all with auto-skipping CI jobs gated on which secret is set:
+  - (1) [docs/DEPLOY.md](docs/DEPLOY.md) — **VPS** (Oracle/Hetzner Ubuntu VM, SSH-deploy from CI, systemd autostart, full compose stack incl. Caddy/Prometheus/Grafana/Alertmanager).
+  - (2) [docs/SELFHOST.md](docs/SELFHOST.md) — **self-host on Windows PC** with Docker Desktop; CI only builds, **Watchtower** on the host polls GHCR every 60s and auto-updates the `ai` container.
+  - (3) [docs/FLY.md](docs/FLY.md) — **Fly.io** + managed Redis (Upstash free) + managed Qdrant (Qdrant Cloud free). Single-service Fly app driven by [fly.toml](fly.toml); no compose. CI does `flyctl deploy --image ghcr.io/...:tag` reusing the GHCR-built image (no double build).
+  - CI gates: `deploy` job runs only if `SSH_HOST` secret is set; `fly-deploy` only if `FLY_API_TOKEN` is set. Same `git tag v*` triggers whichever is configured.
+- **On-call runbook:** [docs/RUNBOOK.md](docs/RUNBOOK.md) — 11 scenarios (OpenAI down, Redis OOM, Qdrant restore, rate-limit storm, JWT rotation, startup failures, chat stream hangs, **rollback**, **Caddy TLS failures**, **Telegram alerts not arriving**).
 
 ### Backup policy
 

@@ -105,3 +105,44 @@ async def test_metrics_endpoint_reports_qdrant_collection_size(mock_redis, mock_
 async def test_metrics_requires_auth(mock_redis, mock_qdrant):
     resp = await _get_metrics(mock_redis, mock_qdrant, headers=None)
     assert resp.status_code == 401
+
+
+# --- METRICS_SCRAPE_TOKEN Bearer fallback (for Prometheus, which can't send
+# the X-Service-Token custom header in scrape_configs). ----------------------
+
+
+async def test_metrics_accepts_scrape_token_via_bearer(monkeypatch, mock_redis, mock_qdrant):
+    # Override the runtime-loaded settings.metrics_scrape_token; tests freeze
+    # the module-level singleton at import time so monkeypatching the attr
+    # directly is the supported pattern (see tests/test_config.py).
+    from app import config as config_module
+
+    monkeypatch.setattr(config_module.settings, "metrics_scrape_token", "prom-scrape-secret-32hex")
+
+    resp = await _get_metrics(
+        mock_redis, mock_qdrant, {"Authorization": "Bearer prom-scrape-secret-32hex"}
+    )
+    assert resp.status_code == 200
+    assert "healthai_requests_total" in resp.text
+
+
+async def test_metrics_rejects_wrong_bearer_when_scrape_token_set(
+    monkeypatch, mock_redis, mock_qdrant
+):
+    from app import config as config_module
+
+    monkeypatch.setattr(config_module.settings, "metrics_scrape_token", "the-real-token")
+
+    resp = await _get_metrics(
+        mock_redis, mock_qdrant, {"Authorization": "Bearer not-the-token"}
+    )
+    # No JWT_PUBLIC_KEY configured, no X-Service-Token sent → auth_guard
+    # rejects with 401 (the "JWT auth not configured" path).
+    assert resp.status_code == 401
+
+
+async def test_metrics_scrape_token_unset_falls_back_to_x_service_token(mock_redis, mock_qdrant):
+    # With metrics_scrape_token=None (default in tests), Bearer auth must NOT
+    # short-circuit and X-Service-Token must still work.
+    resp = await _get_metrics(mock_redis, mock_qdrant, {"X-Service-Token": "test-token"})
+    assert resp.status_code == 200

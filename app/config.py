@@ -27,6 +27,14 @@ class Settings(BaseSettings):
 
     service_token: str = Field(..., alias="SERVICE_TOKEN")  # comma-separated for rotation
 
+    # Separate token for Prometheus /metrics scraping. Vanilla Prometheus cannot
+    # send a custom `X-Service-Token` header in scrape_configs, only
+    # `Authorization: Bearer <token>`. When this is set, /metrics accepts that
+    # Bearer token in addition to the standard auth_guard paths — letting us
+    # rotate the scrape credential independently of the Laravel-facing
+    # SERVICE_TOKEN. Empty/unset disables the Bearer path on /metrics.
+    metrics_scrape_token: str | None = Field(default=None, alias="METRICS_SCRAPE_TOKEN")
+
     jwt_public_key: str | None = Field(default=None, alias="JWT_PUBLIC_KEY")
     # `JWT_ALG` is intentionally NOT a setting any more — it's hardcoded to RS256 in
     # security.py. Allowing operators to switch to HS256 while keeping the public key

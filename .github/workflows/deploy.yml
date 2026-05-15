@@ -3,16 +3,29 @@ name: Deploy
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to redeploy (must already exist in GHCR, e.g. v1.0.0)"
+        required: true
+        type: string
 
 jobs:
   build-and-publish:
     name: Build + push image to GHCR
     runs-on: ubuntu-latest
+    # workflow_dispatch path skips build (image already exists); only the deploy
+    # job runs. Tag pushes do the full build → push → deploy chain.
+    if: github.event_name == 'push'
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - uses: docker/setup-buildx-action@v3
 
@@ -33,39 +46,234 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build + push
+      - name: Compute extra tags (always include `latest` for self-host Watchtower)
+        id: extra_tags
+        run: |
+          # Append `:latest` to the metadata-action tag list so the self-host
+          # Watchtower path can watch a stable tag. The VPS path uses the
+          # version-specific tag and ignores `latest`.
+          {
+            echo "tags<<EOF"
+            echo "${{ steps.meta.outputs.tags }}"
+            echo "ghcr.io/${{ github.repository }}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build + push (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.extra_tags.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test built image
+      - name: Smoke test built image (amd64 runner arch)
+        # Spin up the ai service alongside Redis + Qdrant sidecars on a shared
+        # docker network — lifespan calls init_redis / init_qdrant which both
+        # need real endpoints. APP_ENV=dev so _validate_prod_safety doesn't
+        # require strong secrets (unit-tested separately in tests/test_config.py).
         run: |
+          set -euo pipefail
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
-          # Smoke runs in APP_ENV=dev so we don't have to mint real prod-grade
-          # secrets (strong SERVICE_TOKEN, signed JWT key, audited origins) just
-          # to prove the image starts. _validate_prod_safety stays untested here
-          # by design — it has unit-test coverage in tests/.
+          NET=smokenet
+
+          cleanup() {
+            docker stop smoke smoke-redis smoke-qdrant >/dev/null 2>&1 || true
+            docker rm   smoke smoke-redis smoke-qdrant >/dev/null 2>&1 || true
+            docker network rm "$NET" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker network create "$NET"
+          docker run -d --name smoke-redis  --network "$NET" redis:7-alpine
+          docker run -d --name smoke-qdrant --network "$NET" qdrant/qdrant:v1.12.4
+
+          # Wait for Redis to accept connections (Qdrant warms up async; its
+          # client retries inside lifespan, so we don't need to gate on it here).
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if docker exec smoke-redis redis-cli ping 2>/dev/null | grep -q PONG; then
+              break
+            fi
+            sleep 1
+          done
+
           SMOKE_TOKEN=$(openssl rand -hex 32)
-          docker run -d --name smoke -p 8001:8001 \
+          docker run -d --name smoke --network "$NET" -p 8001:8001 \
             -e APP_ENV=dev \
             -e OPENAI_API_KEY=sk-ci-smoke-not-a-real-key \
             -e SERVICE_TOKEN="$SMOKE_TOKEN" \
             -e ENABLE_DEV_ROUTES=false \
+            -e REDIS_URL=redis://smoke-redis:6379/0 \
+            -e QDRANT_URL=http://smoke-qdrant:6333 \
             "$IMAGE"
-          for i in 1 2 3 4 5 6 7 8 9 10; do
+
+          # 15 × 2s = 30s budget: covers gunicorn boot + Qdrant collection
+          # creation. /health returns 503 in degraded mode (e.g. OpenAI key is
+          # fake — circuit breaker may open on warmup) — we accept either 200
+          # or 503 as "container starts and serves traffic".
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health || echo 000)
             if [ "$code" = "200" ] || [ "$code" = "503" ]; then
               echo "smoke OK (HTTP $code)"
-              docker stop smoke
               exit 0
             fi
             sleep 2
           done
           echo "smoke FAILED — container did not respond on /health"
+          echo "=== ai logs ==="
           docker logs smoke
+          echo "=== redis logs ==="
+          docker logs smoke-redis
+          echo "=== qdrant logs ==="
+          docker logs smoke-qdrant
           exit 1
+
+  deploy:
+    name: Deploy to VPS via SSH (optional)
+    runs-on: ubuntu-latest
+    # On tag push: wait for build. On manual dispatch: skip build dep.
+    # SSH deploy is gated on the `SSH_HOST` secret being set — self-host
+    # deployments using Watchtower don't need this job and can leave the
+    # secret unset, in which case the job no-ops with a friendly note.
+    needs: [build-and-publish]
+    if: |
+      always() &&
+      (github.event_name == 'workflow_dispatch' || needs.build-and-publish.result == 'success')
+    steps:
+      - name: Check whether SSH deploy is configured
+        id: ssh_check
+        # Surface the secret through `env:` rather than direct
+        # `${{ secrets.SSH_HOST }}` access — silences the actionlint warning
+        # about referencing a secret that may not exist (self-host path).
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          if [ -n "${SSH_HOST:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "SSH_HOST secret not set — skipping VPS deploy. If you're running self-host with Watchtower, this is expected: Watchtower polls GHCR and updates the container automatically."
+          fi
+
+      - name: Resolve deploy ref
+        id: ref
+        run: |
+          # Tag push → use the pushed tag. Manual dispatch → use the input.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: SSH → pull → up → health-gate
+        if: steps.ssh_check.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # 10 min: arm64 image pull over residential bandwidth can be slow.
+          command_timeout: 10m
+          # The script runs on the VM as appuser; /opt/health-ai is pre-cloned
+          # by server_bootstrap.sh (Phase 4) and owned by appuser:docker.
+          script: |
+            set -euo pipefail
+            cd /opt/health-ai
+
+            TAG="${{ steps.ref.outputs.tag }}"
+            echo "Deploying tag $TAG"
+
+            # Pull the compose/Caddyfile/ops/ from the same git ref so config
+            # and image version stay in lockstep. Fetch tags first so a freshly
+            # pushed tag is visible.
+            git fetch --tags --prune
+            git checkout "$TAG"
+
+            # The compose file references ghcr.io/<repo>:<tag> via $IMAGE_TAG.
+            # Exported here so `docker compose` interpolates it.
+            export IMAGE_TAG="$TAG"
+
+            # Pull only the ai service image (redis/qdrant/caddy/etc are public
+            # and rarely change between releases — saves bandwidth).
+            docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.prod.yml \
+              --env-file .env.production \
+              pull ai
+
+            docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.prod.yml \
+              --env-file .env.production \
+              up -d --remove-orphans
+
+            # Post-deploy health gate. /health returns 200 with status:ok when
+            # all dependencies are reachable. 60s budget covers gunicorn
+            # workers reloading + Qdrant readiness on a cold restart.
+            for i in $(seq 1 30); do
+              status=$(curl -fsS http://localhost:8001/health 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("status",""))' || true)
+              if [ "$status" = "ok" ]; then
+                echo "health gate OK after ${i} attempt(s)"
+                exit 0
+              fi
+              sleep 2
+            done
+
+            echo "DEPLOY FAILED — /health did not reach status:ok in 60s"
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=80 ai
+            exit 1
+
+  fly-deploy:
+    name: Deploy to Fly.io (optional)
+    runs-on: ubuntu-latest
+    # Parallel with the SSH `deploy` job — only one of them is meant to run
+    # per release depending on which deploy target you've configured.
+    # Gated on the FLY_API_TOKEN secret: if unset, the job no-ops.
+    needs: [build-and-publish]
+    if: |
+      always() &&
+      (github.event_name == 'workflow_dispatch' || needs.build-and-publish.result == 'success')
+    steps:
+      - name: Check whether Fly deploy is configured
+        id: fly_check
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -n "${FLY_API_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "FLY_API_TOKEN secret not set — skipping Fly deploy."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.fly_check.outputs.configured == 'true'
+
+      - name: Resolve deploy tag for Fly
+        id: fly_ref
+        if: steps.fly_check.outputs.configured == 'true'
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.fly_check.outputs.configured == 'true'
+
+      - name: flyctl deploy (reuse GHCR image, no rebuild)
+        if: steps.fly_check.outputs.configured == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        # `--image` skips the Fly remote builder and reuses the multi-arch
+        # image we just pushed to GHCR. Saves 5-7 min and ensures
+        # bit-identical artifact between VPS and Fly paths.
+        run: |
+          flyctl deploy \
+            --image ghcr.io/${{ github.repository }}:${{ steps.fly_ref.outputs.tag }} \
+            --strategy rolling \
+            --wait-timeout 300

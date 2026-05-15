@@ -1,0 +1,88 @@
+# Fly.io deployment config for health-ai-service.
+#
+# Architecture: ai service runs on Fly (1 machine). Redis + Qdrant come from
+# free-tier managed services (Upstash and Qdrant Cloud) — Fly's single-service
+# model doesn't fit our 4-container compose stack on the free allowance.
+#
+# Setup walkthrough: docs/FLY.md
+# Local dev / VPS deploy paths remain unchanged.
+
+app = "health-ai-service"           # change if your Fly app name is different
+primary_region = "fra"              # Frankfurt — low latency for RU/EU users
+kill_signal  = "SIGTERM"
+kill_timeout = 35                   # > 30s graceful_timeout in gunicorn_conf.py
+
+[build]
+  # Use the same multi-stage Dockerfile as VPS/self-host. Fly's builder
+  # rebuilds on every `fly deploy`; for CI-driven deploys we override with
+  # `--image ghcr.io/raifaheem/ai-service:vX.Y.Z` so we don't rebuild twice.
+  dockerfile = "Dockerfile"
+
+[env]
+  # Defaults that aren't secrets. Override per-env with `fly secrets set`.
+  APP_ENV = "production"
+  APP_NAME = "health-ai-service"
+  ENABLE_DEV_ROUTES = "false"
+  LOG_FORMAT = "json"
+  LOG_LEVEL = "INFO"
+  # Single worker on the smallest Fly machine — gunicorn baseline ~200M RSS
+  # per worker, 256M shared-cpu-1x can't fit 2. Scale by adding machines
+  # (`fly scale count 2`), not by raising worker count inside one machine.
+  GUNICORN_WORKERS = "1"
+  # OpenAI tuning (same as .env.production.example defaults).
+  OPENAI_MODEL = "gpt-4o-mini"
+  OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+  OPENAI_TIMEOUT_SECONDS = "30"
+  OPENAI_MAX_RETRIES = "3"
+  MAX_RESPONSE_TOKENS = "1000"
+  # Redis (Upstash) — TTL/limits same as VPS path.
+  REDIS_PREFIX = "healthai"
+  REDIS_TTL_SECONDS = "86400"
+  REDIS_MAX_TURNS = "12"
+  REDIS_MAX_CONNECTIONS = "20"
+  REDIS_SOCKET_TIMEOUT = "5"
+  # Rate limit.
+  RATE_LIMIT_PER_MINUTE = "20"
+  RATE_LIMIT_BURST = "5"
+  # Qdrant Cloud — same shape as self-hosted Qdrant; the client picks up
+  # QDRANT_API_KEY automatically.
+  QDRANT_COLLECTION = "medical_articles"
+  QDRANT_TIMEOUT = "10"
+  RAG_SCORE_THRESHOLD = "0.35"
+  EMBEDDING_CACHE_TTL = "86400"
+  # ALLOWED_ORIGINS / CORS — set this to your Fly hostname after launch:
+  # fly secrets set ALLOWED_ORIGINS=https://health-ai-service.fly.dev
+  # (defaults left in [env] would be visible in `fly config show` — keep
+  # secrets out of this file.)
+
+[http_service]
+  internal_port = 8001
+  force_https = true
+  auto_stop_machines = "stop"       # stop machine after no traffic — free-tier saver
+  auto_start_machines = true
+  min_machines_running = 0          # cold start ~5s, acceptable for low-traffic launch
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50                 # spawn another machine if running ≥ 50 concurrent
+    hard_limit = 100
+
+  # Health check that the Fly proxy uses to route / restart machines.
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"            # cheapest tier
+  memory = "512mb"                  # bump from 256mb default — baseline ai ~300M
+  cpus = 1
+  cpu_kind = "shared"
+
+# Process-group definition. `app` is the default group that gets the
+# http_service above; could add a `worker` for background tasks later.
+[processes]
+  app = "gunicorn app.main:app -c gunicorn_conf.py"

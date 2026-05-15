@@ -177,3 +177,81 @@ redis-cli DEL healthai:conv:<id>:turns healthai:conv:<id>:owner healthai:conv:<i
 # Force-close all circuit breakers
 docker compose exec ai python -c "import asyncio; from app.services.circuit_breaker import openai_breaker, qdrant_breaker; asyncio.run(asyncio.gather(openai_breaker.reset(), qdrant_breaker.reset()))"
 ```
+
+---
+
+## 9. Rollback to a previous release
+
+**Symptom:** A freshly deployed tag misbehaves in prod — degraded `/health`, regression in answers, alert storm.
+
+**Check:**
+```bash
+# Which tag is the running container built from?
+ssh appuser@$VM 'cd /opt/health-ai && git describe --tags --exact-match HEAD 2>/dev/null || git rev-parse --short HEAD'
+
+# What does the last known-good release look like?
+git tag --sort=-v:refname | head -5
+```
+
+**Action:**
+```bash
+ssh appuser@$VM
+cd /opt/health-ai
+PREV=v1.0.0   # known-good
+git fetch --tags
+git checkout "$PREV"
+export IMAGE_TAG="$PREV"
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production pull ai
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d
+# Confirm health
+curl -fsS http://localhost:8001/health | jq .status
+```
+
+The image at `$PREV` is still on GHCR (we never delete published tags), so this works as long as the tag exists. Total downtime ~5-10s for the container restart.
+
+**Postmortem hook:** save `docker compose logs --tail=200 ai` from the broken release before restarting — otherwise the json-file driver rotates the evidence away.
+
+---
+
+## 10. Caddy can't get a TLS certificate
+
+**Symptom:** `https://$CADDY_DOMAIN/` fails with `ERR_CERT_AUTHORITY_INVALID` or `NET::ERR_CERT_COMMON_NAME_INVALID`. `docker compose logs caddy` shows ACME challenge failure.
+
+**Check:**
+```bash
+# Is port 80 reachable from the public internet? (Let's Encrypt HTTP-01)
+curl -fsS http://$CADDY_DOMAIN/.well-known/acme-challenge/ping  # expects 404, not timeout
+
+# Does the DuckDNS subdomain resolve to the VM's current public IP?
+dig +short $CADDY_DOMAIN
+curl -s ifconfig.me
+```
+
+**Action:**
+- **Resolution mismatch:** run `/opt/health-ai/scripts/duckdns_update.sh` manually as appuser; check `/var/log/health-ai-duckdns.log`. If `KO`, `DUCKDNS_TOKEN` is invalid — regenerate at duckdns.org and update `.env.production`.
+- **Port 80 not reachable:** UFW or Oracle Security List is blocking. `sudo ufw status verbose` should show 80/tcp ALLOW. Oracle Cloud also has its own ingress rules in the VCN — open 80 + 443 in the Security List for the VM's subnet.
+- **Rate-limited by Let's Encrypt:** LE has a 5-failure/hour limit per hostname. Wait an hour, then retry. To force renewal: `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`.
+
+**Postmortem hook:** the cert lives in the `caddy-data` volume — `docker volume inspect health-ai_caddy-data`. Don't delete it preemptively; renewal handles it within 30 days of expiry.
+
+---
+
+## 11. Telegram alerts not arriving
+
+**Symptom:** Prometheus shows firing alerts (`ALERTS{alertstate="firing"}` non-empty) but no Telegram message. Or alerts arrived once and then stopped.
+
+**Check:**
+```bash
+# Alertmanager-bot health
+docker compose logs alertmanager-bot --tail=50
+
+# Alertmanager itself
+docker compose logs alertmanager --tail=50
+
+# Is the bot still authorized? Send /start from the registered chat.
+```
+
+**Action:**
+- **`401 Unauthorized` from Telegram API:** `TELEGRAM_BOT_TOKEN` was revoked or rotated. Generate a new token via @BotFather → update `.env.production` → `docker compose up -d alertmanager-bot`.
+- **`chat not found`:** `TELEGRAM_CHAT_ID` is wrong (or the bot was removed from the chat). Send any message to the bot, then `curl https://api.telegram.org/bot$TOKEN/getUpdates` and read `result[*].message.chat.id`.
+- **Silent for some severities:** check `ops/alertmanager/alertmanager.yml` routes — the `severity: warning` path has a 12h repeat_interval, so a single warning won't re-fire for 12 hours.

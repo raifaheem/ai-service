@@ -2,7 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
@@ -233,18 +233,45 @@ async def health():
     }
 
 
+async def _metrics_auth(
+    authorization: str | None = Header(default=None),
+    x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
+):
+    """Like `auth_guard` but also accepts `Authorization: Bearer <METRICS_SCRAPE_TOKEN>`.
+
+    Vanilla Prometheus can only send `Authorization: Bearer <token>` in
+    scrape_configs — not the custom `X-Service-Token` header used elsewhere.
+    When `METRICS_SCRAPE_TOKEN` is configured, this dependency short-circuits
+    on a matching Bearer token; otherwise it falls back to `auth_guard`'s
+    full X-Service-Token / JWT logic.
+    """
+    import hmac
+
+    scrape_token = settings.metrics_scrape_token
+    if scrape_token and authorization and authorization.lower().startswith("bearer "):
+        candidate = authorization.split(" ", 1)[1].strip()
+        if hmac.compare_digest(candidate, scrape_token):
+            return {"auth": "metrics_scrape"}
+        # Fall through — the Bearer token might be a JWT for an admin user.
+
+    # Delegate to the canonical auth_guard for X-Service-Token + JWT paths.
+    return auth_guard(authorization=authorization, x_service_token=x_service_token)
+
+
 @app.get(
     "/metrics",
     tags=["system"],
     summary="Prometheus-format metrics",
     description=(
-        "Authenticated metrics endpoint (`X-Service-Token` or JWT), Prometheus text format "
-        "(version=0.0.4). Exposes `healthai_requests_total`, `healthai_request_duration_seconds`, "
+        "Authenticated metrics endpoint. Accepts `X-Service-Token`, a user JWT "
+        "(`Authorization: Bearer <jwt>`), or `Authorization: Bearer <METRICS_SCRAPE_TOKEN>` "
+        "for Prometheus scraping. Prometheus text format (version=0.0.4). Exposes "
+        "`healthai_requests_total`, `healthai_request_duration_seconds`, "
         "`healthai_intent_total`, `healthai_openai_tokens_total`, `healthai_rag_requests_total`, "
         "`healthai_circuit_breaker_state`, `healthai_active_conversations`, "
         "`healthai_qdrant_collection_size`. Multi-worker safe via PROMETHEUS_MULTIPROC_DIR."
     ),
-    dependencies=[Depends(auth_guard)],
+    dependencies=[Depends(_metrics_auth)],
 )
 async def get_metrics():
     from fastapi import Response

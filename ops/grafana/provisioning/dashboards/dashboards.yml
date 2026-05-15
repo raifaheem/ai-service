@@ -1,0 +1,17 @@
+# Auto-load every JSON dashboard from /var/lib/grafana/dashboards/ on startup.
+# The dashboards directory is bind-mounted from ./ops/grafana/dashboards/
+# (see docker-compose.prod.yml) so adding a new dashboard = drop a .json,
+# `docker compose restart grafana`.
+
+apiVersion: 1
+
+providers:
+  - name: health-ai
+    orgId: 1
+    folder: "health-ai"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

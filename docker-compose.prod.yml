@@ -44,6 +44,25 @@ services:
       retries: 10
 
   ai:
+    # Override the base `build: .` — in prod we pull a pre-built image from
+    # GHCR matching the deployed git tag. IMAGE_TAG is exported by the deploy
+    # workflow before `docker compose pull/up` (VPS path), or pinned to
+    # `latest` in .env.production when Watchtower handles updates (self-host
+    # path — Watchtower watches the `latest` tag and pulls when GHCR publishes
+    # a new image for it).
+    image: ghcr.io/raifaheem/ai-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    # Watchtower only touches containers carrying this label — Redis/Qdrant/etc.
+    # stay pinned to their explicit versions.
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    # No public 8001 — Caddy is the only ingress; the ai service is reachable
+    # only on the compose network as `ai:8001`.
+    ports: []
+    # The dev bind-mount `./app:/app/app:ro` from the base file is preserved
+    # by compose's additive list semantics — but on the prod VM the host
+    # `./app/` is the same git checkout as the image build, so it's a no-op
+    # in practice and enables emergency SSH hotfixes if needed.
     env_file:
       - .env.production
     environment:
@@ -70,6 +89,208 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # Reverse proxy + auto-TLS. Caddy handles Let's Encrypt for the DuckDNS
+  # subdomain and terminates HTTPS in front of the ai service and Grafana.
+  # The Caddyfile reads $CADDY_DOMAIN from .env.production.
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file:
+      - .env.production
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      ai:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Prometheus scrapes /metrics on the ai service. The scrape config injects
+  # the X-Service-Token header so the authenticated /metrics endpoint accepts
+  # the request — see ops/prometheus/prometheus.yml.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: always
+    # No published port: Prometheus UI is accessible only from inside the
+    # compose network. To debug locally on the VM: `ssh -L 9090:localhost:9090`
+    # after `docker compose port prometheus 9090`.
+    volumes:
+      - ./ops/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    depends_on:
+      ai:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Alertmanager dispatches Prometheus alerts via webhook to alertmanager-bot,
+  # which translates them into Telegram messages. Two-container split avoids
+  # the dance of rendering ${TELEGRAM_BOT_TOKEN} into alertmanager.yml at boot
+  # (Alertmanager doesn't natively expand env in its YAML config).
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: always
+    volumes:
+      - ./ops/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Alertmanager → Telegram translator. Receives AM webhooks on :8080 and
+  # forwards formatted messages to the given Telegram chat using the bot token.
+  alertmanager-bot:
+    image: metalmatze/alertmanager-bot:0.4.3
+    restart: always
+    environment:
+      ALERTMANAGER_URL: "http://alertmanager:9093"
+      TELEGRAM_ADMIN: "${TELEGRAM_CHAT_ID}"
+      TELEGRAM_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+      LISTEN_ADDR: "0.0.0.0:8080"
+      STORE: "bolt"
+      BOLT_PATH: "/data/bot.db"
+    volumes:
+      - alertmanager-bot-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 16M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Grafana exposes dashboards behind Caddy at https://$CADDY_DOMAIN/grafana/.
+  # Prometheus datasource + the starter health-ai dashboard are provisioned
+  # from ops/grafana/.
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: always
+    env_file:
+      - .env.production
+    environment:
+      GF_SERVER_ROOT_URL: "https://${CADDY_DOMAIN}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 256M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Override `build: .` on the seed/backup helpers to use the same GHCR image
+  # as the ai service. Avoids re-building locally on the prod VM.
+  seed:
+    image: ghcr.io/raifaheem/ai-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+
+  qdrant-backup:
+    image: ghcr.io/raifaheem/ai-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+
+  # Watchtower watches the running ai container and pulls a fresh image from
+  # GHCR whenever a new tag matching `IMAGE_TAG` is published. Used for the
+  # self-host deploy path (no SSH from CI): the GitHub Actions workflow only
+  # builds + pushes; Watchtower delivers the image to the running stack.
+  #
+  # Set WATCHTOWER_POLL_INTERVAL_SECONDS=60 to check every minute. Only the
+  # `ai` service is auto-updated (label below) — Redis/Qdrant/Caddy/etc. are
+  # external images that rarely change and shouldn't restart automatically.
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    restart: always
+    environment:
+      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL_SECONDS:-60}"
+      WATCHTOWER_CLEANUP: "true"             # remove old images after update
+      WATCHTOWER_LABEL_ENABLE: "true"        # only update containers with the enable label
+      WATCHTOWER_ROLLING_RESTART: "true"     # avoid downtime on multi-container update
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      # Authenticate to GHCR for pulls of `ghcr.io/raifaheem/ai-service:*`.
+      # The token lives in .env.production (WATCHTOWER_HTTP_API_TOKEN unused).
+      REPO_USER: "${GHCR_USERNAME:-}"
+      REPO_PASS: "${GHCR_TOKEN:-}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 16M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Tracing-profile services: only realized when `docker compose --profile
   # tracing up` is invoked with this overlay. Conservative caps so an
@@ -108,3 +329,11 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  caddy-data:
+  caddy-config:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:
+  alertmanager-bot-data:

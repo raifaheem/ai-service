@@ -13,3 +13,10 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .DS_Store
+
+# Rendered secrets that live only on the prod VM (written by
+# scripts/server_bootstrap.sh from .env.production).
+ops/prometheus/scrape_token
+
+# Qdrant snapshot output (volume bind, host-side rotation).
+backups/qdrant/

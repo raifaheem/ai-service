@@ -1,0 +1,16 @@
+# Auto-provision the Prometheus datasource on Grafana startup. The user
+# never needs to click through Datasources → Add, and `health-ai.json`
+# dashboard can reference `Prometheus` by name and have it resolve.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: "15s"

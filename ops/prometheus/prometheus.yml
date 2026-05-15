@@ -1,0 +1,49 @@
+# Prometheus scrape config for health-ai-service.
+#
+# The ai service's /metrics endpoint requires auth. Vanilla Prometheus only
+# supports `Authorization: Bearer <token>` in scrape_configs (no custom
+# headers), so the app exposes a dedicated `METRICS_SCRAPE_TOKEN` accepted
+# via Bearer auth on /metrics (see app/main.py `_metrics_auth`).
+#
+# The scrape token is read from /etc/prometheus/scrape_token — that file is
+# written by scripts/server_bootstrap.sh from $METRICS_SCRAPE_TOKEN in
+# .env.production. Rotating the scrape credential = rewriting that file +
+# updating .env.production + `docker compose up -d ai prometheus`.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    service: health-ai
+    env: production
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Prometheus self-scrape — useful for alert-evaluation lag visibility.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: health-ai
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ["ai:8001"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/scrape_token
+
+  # Alertmanager self-scrape — exposes Notification + dispatch metrics so we
+  # can alert on "alerts firing but no notifications sent" (i.e. Telegram broke).
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]

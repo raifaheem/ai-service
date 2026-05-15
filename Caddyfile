@@ -1,0 +1,45 @@
+# Caddy 2 reverse proxy + auto Let's Encrypt for health-ai-service.
+#
+# $CADDY_DOMAIN is exported from .env.production (loaded by docker-compose
+# via the `caddy` service's env_file). On first start Caddy resolves the
+# domain, completes the ACME HTTP-01 challenge on port 80, and stores the
+# certificate in the caddy-data volume — renewals are automatic.
+#
+# Routes:
+#   /grafana/*   → grafana:3000   (dashboards behind GF admin auth)
+#   /*           → ai:8001        (FastAPI: /v1/chat, /v1/triage/..., /health)
+
+{$CADDY_DOMAIN} {
+    encode zstd gzip
+
+    # Grafana lives at /grafana/ — Grafana itself is configured with
+    # GF_SERVER_ROOT_URL and GF_SERVER_SERVE_FROM_SUB_PATH so its internal
+    # links resolve correctly under this prefix.
+    handle_path /grafana/* {
+        reverse_proxy grafana:3000
+    }
+
+    # Everything else goes to the ai service. /metrics is already
+    # authenticated at the application layer (X-Service-Token or JWT),
+    # so we don't add an extra Caddy auth shell — keeps Prometheus
+    # scrape config simple.
+    handle {
+        reverse_proxy ai:8001 {
+            # SSE streaming on /v1/chat/stream — Caddy passes through by
+            # default, but make it explicit and disable buffering for delta
+            # events to land in the browser immediately.
+            flush_interval -1
+            transport http {
+                read_timeout 5m
+                write_timeout 5m
+            }
+        }
+    }
+
+    # Structured access logs to stdout; container's json-file driver
+    # captures them (capped at 10m × 3 in docker-compose.prod.yml).
+    log {
+        output stdout
+        format json
+    }
+}

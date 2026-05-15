@@ -1,0 +1,108 @@
+# Prometheus alert rules for health-ai-service.
+#
+# Severity tags (for Alertmanager routing later, currently all → Telegram):
+#   - critical: user-visible outage; act now
+#   - warning:  degradation; investigate within hours
+#
+# All thresholds are sized for the current free-tier prod (single Oracle VM,
+# ~light traffic). Tighten as traffic grows.
+
+groups:
+  - name: health-ai-availability
+    interval: 30s
+    rules:
+      - alert: HealthAITargetDown
+        # Prometheus failed to scrape the ai service for > 2 minutes. Either
+        # the container is down, the network is severed, or auth is broken.
+        expr: up{job="health-ai"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "health-ai /metrics scrape failing"
+          description: "Prometheus can't reach ai:8001/metrics for 2m+. Check `docker compose ps`, `docker logs ai`, and METRICS_SCRAPE_TOKEN parity between .env.production and scrape_token file."
+
+      - alert: High5xxRate
+        # 5xx rate > 5% of total over a 5-minute window. Excludes 4xx (client
+        # errors are user-driven, not service health).
+        expr: |
+          (
+            sum(rate(healthai_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(healthai_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "5xx error rate above 5%"
+          description: "{{ printf \"%.2f\" $value }} of requests returning 5xx over last 5m. Check ai logs + OpenAI/Qdrant circuit state."
+
+      - alert: HighLatencyP95
+        # p95 latency > 5s over 10 min. /v1/chat normal range is 1-3s for
+        # gpt-4o-mini; >5s means upstream slow or worker contention.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(healthai_request_duration_seconds_bucket[10m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency above 5s"
+          description: "p95 = {{ printf \"%.2fs\" $value }} over last 10m."
+
+  - name: health-ai-circuits
+    interval: 30s
+    rules:
+      - alert: OpenAICircuitOpen
+        # Breaker state value: 0=closed, 1=half_open, 2=open (see app/metrics.py).
+        # Open state means OpenAI failed 3+ times in 60s — all chat traffic is
+        # being rejected with 503 until the breaker quiets.
+        expr: healthai_circuit_breaker_state{name="openai"} == 2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OpenAI circuit breaker is open"
+          description: "Chat traffic is failing with 503. Check OpenAI status (https://status.openai.com) + ai logs for the trip reason. Breaker auto-recovers after 60s quiet."
+
+      - alert: QdrantCircuitOpen
+        expr: healthai_circuit_breaker_state{name="qdrant"} == 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Qdrant circuit breaker is open"
+          description: "RAG fails open (no sources attached to answers) but chat still works. Check Qdrant container health + logs."
+
+  - name: health-ai-saturation
+    interval: 1m
+    rules:
+      - alert: RAGHitRateCollapsed
+        # RAG hit rate < 30% over 30 min is a strong signal of "RAG silently
+        # went cold" (mentioned in CLAUDE.md as the canonical regression mode
+        # when RAG_SCORE_THRESHOLD drifts or KB shape changes).
+        expr: |
+          (
+            sum(rate(healthai_rag_requests_total{hit="true"}[30m]))
+            /
+            sum(rate(healthai_rag_requests_total[30m]))
+          ) < 0.3
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG hit rate below 30%"
+          description: "RAG hit rate = {{ printf \"%.0f%%\" (mulf $value 100) }} over last 30m. Verify Qdrant has the KB seeded, check RAG_SCORE_THRESHOLD, and confirm payload.language filter."
+
+      - alert: QdrantCollectionEmpty
+        # If the collection is empty, RAG can't return anything. Most likely
+        # cause: VM was rebuilt and KB never re-seeded.
+        expr: healthai_qdrant_collection_size < 10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Qdrant collection nearly empty"
+          description: "Collection has {{ $value }} points — KB likely not seeded. Run `docker compose --profile seed run --rm seed`."
