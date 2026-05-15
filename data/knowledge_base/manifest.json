@@ -133,6 +133,19 @@
       }
     },
     {
+      "source_id": "en-headache",
+      "file": "articles/en/headache.md",
+      "title": "Headache: Causes, Self-Help, and Warning Signs",
+      "language": "en",
+      "topic": "symptoms",
+      "attribution": {
+        "source": "WHO Headache disorders fact sheet; NIH MedlinePlus Headache",
+        "source_url": "https://www.who.int/news-room/fact-sheets/detail/headache-disorders",
+        "license": "public domain (NIH) / CC BY-NC-SA 3.0 IGO (WHO) — content adapted, not reproduced",
+        "accessed": "2026-05-15"
+      }
+    },
+    {
       "source_id": "en-back-pain",
       "file": "articles/en/back-pain.md",
       "title": "Back Pain: What to Do and When to See a Doctor",
@@ -564,12 +577,36 @@
     "target_language": "kk",
     "source_for_review": "review_status: machine_translated",
     "items": [
-      {"source_id": "kk-hypertension",         "translate_from": "ru-hypertension",         "topic": "cardiovascular"},
-      {"source_id": "kk-diabetes-prevention",  "translate_from": "ru-diabetes-prevention",  "topic": "diabetes"},
-      {"source_id": "kk-heartburn",            "translate_from": "ru-heartburn",            "topic": "digestive"},
-      {"source_id": "kk-eczema",               "translate_from": "ru-eczema",               "topic": "skin"},
-      {"source_id": "kk-adult-vaccinations",   "translate_from": "ru-adult-vaccinations",   "topic": "vaccination"},
-      {"source_id": "kk-adult-screenings",     "translate_from": "ru-adult-screenings",     "topic": "screening"}
+      {
+        "source_id": "kk-hypertension",
+        "translate_from": "ru-hypertension",
+        "topic": "cardiovascular"
+      },
+      {
+        "source_id": "kk-diabetes-prevention",
+        "translate_from": "ru-diabetes-prevention",
+        "topic": "diabetes"
+      },
+      {
+        "source_id": "kk-heartburn",
+        "translate_from": "ru-heartburn",
+        "topic": "digestive"
+      },
+      {
+        "source_id": "kk-eczema",
+        "translate_from": "ru-eczema",
+        "topic": "skin"
+      },
+      {
+        "source_id": "kk-adult-vaccinations",
+        "translate_from": "ru-adult-vaccinations",
+        "topic": "vaccination"
+      },
+      {
+        "source_id": "kk-adult-screenings",
+        "translate_from": "ru-adult-screenings",
+        "topic": "screening"
+      }
     ]
   }
 }

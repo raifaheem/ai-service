@@ -35,6 +35,7 @@ Every `source_id` below corresponds to one file in `articles/<lang>/` and one en
 | ru-stress | ru | mental-health | NIH NIMH + CDC |
 | ru-anxiety | ru | mental-health | NIH NIMH + WHO |
 | ru-seasonal-cold | ru | seasonal | CDC + NIH MedlinePlus |
+| en-headache | en | symptoms | WHO Headache disorders + NIH MedlinePlus |
 | en-back-pain | en | symptoms | NICE NG59 + NIH MedlinePlus |
 | en-fatigue | en | symptoms | NIH MedlinePlus + CDC |
 | en-insomnia | en | sleep | CDC + AASM |
