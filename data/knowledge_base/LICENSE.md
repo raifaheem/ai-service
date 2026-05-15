@@ -2,6 +2,17 @@
 
 All articles in this directory are **original adaptations** grounded in publicly available medical materials. No content was copy-pasted from source publications; each article is rewritten in the voice of this project, with claims attributable to the cited source.
 
+## Content policy — excluded topics
+
+Per project content policy, the following clinical material is **intentionally excluded** from this corpus:
+
+- Sexual health, sexually transmitted infections (STIs/STDs), contraception, lifestyle factors framed around intercourse or substance-using behaviour.
+- HPV vaccination and cervical screening (Pap test, HPV-DNA).
+- In-pregnancy vaccination schedules and pregnancy-specific vaccine framing in adult immunization articles.
+- Mammography framing tied to reproductive risk factors.
+
+Neutral mentions of pregnancy in clinical contexts (folate supplementation for those planning pregnancy, GERD as a trigger in late pregnancy, preeclampsia as a red flag) are retained — they are baseline medical content, not sensitive material.
+
 ## Sources used
 
 | Source | License | Used for |
@@ -21,7 +32,7 @@ All articles in this directory are **original adaptations** grounded in publicly
 
 ## Content attribution table
 
-Every `source_id` below corresponds to one file in `articles/<lang>/` and one entry in `manifest.json`. Machine-translated Kazakh articles are flagged in the manifest with `review_status: "machine_translated"` pending human review.
+Every `source_id` below corresponds to one file in `articles/<lang>/` and one entry in `manifest.json`. The corpus covers 21 topics × 3 locales = 63 articles. Machine-translated Kazakh articles are flagged in the manifest with `review_status: "machine_translated"` pending human review by a native speaker.
 
 | source_id | Language | Topic | Primary source |
 |---|---|---|---|
@@ -30,57 +41,68 @@ Every `source_id` below corresponds to one file in `articles/<lang>/` and one en
 | ru-fatigue | ru | symptoms | NIH MedlinePlus + CDC |
 | ru-insomnia | ru | sleep | CDC + AASM |
 | ru-vitamin-d | ru | nutrition | NIH ODS + EFSA |
+| ru-iron-b12 | ru | nutrition | NIH ODS + CDC |
 | ru-hydration | ru | nutrition | EFSA + CDC |
 | ru-cardio-basics | ru | activity | WHO + CDC |
+| ru-strength-training | ru | activity | WHO + CDC |
+| ru-stretching | ru | activity | NIH MedlinePlus + CDC |
 | ru-stress | ru | mental-health | NIH NIMH + CDC |
 | ru-anxiety | ru | mental-health | NIH NIMH + WHO |
+| ru-meditation | ru | mental-health | NIH NCCIH + CDC |
 | ru-seasonal-cold | ru | seasonal | CDC + NIH MedlinePlus |
-| en-headache | en | symptoms | WHO Headache disorders + NIH MedlinePlus |
-| en-back-pain | en | symptoms | NICE NG59 + NIH MedlinePlus |
-| en-fatigue | en | symptoms | NIH MedlinePlus + CDC |
-| en-insomnia | en | sleep | CDC + AASM |
-| en-iron-b12 | en | nutrition | NIH ODS + CDC |
-| en-hydration | en | nutrition | EFSA + CDC |
-| en-strength-training | en | activity | WHO + CDC |
-| en-stretching | en | activity | NIH MedlinePlus + CDC |
-| en-anxiety | en | mental-health | NIH NIMH + WHO |
-| en-meditation | en | mental-health | NIH NCCIH + CDC |
-| en-seasonal-allergies | en | seasonal | CDC + NIH MedlinePlus |
-| kk-headache | kk | symptoms | Translated from ru-headache |
-| kk-back-pain | kk | symptoms | Translated from ru-back-pain |
-| kk-fatigue | kk | symptoms | Translated from ru-fatigue |
-| kk-insomnia | kk | sleep | Translated from ru-insomnia |
-| kk-vitamins | kk | nutrition | Adapted from multiple NIH ODS fact sheets |
-| kk-hydration | kk | nutrition | Translated from ru-hydration |
-| kk-stress | kk | mental-health | Translated from ru-stress |
-| kk-meditation | kk | mental-health | Translated from en-meditation |
-| kk-seasonal-cold | kk | seasonal | Translated from ru-seasonal-cold |
-| kk-allergies | kk | seasonal | Translated from en-seasonal-allergies |
+| ru-seasonal-allergies | ru | seasonal | CDC + NIH MedlinePlus |
 | ru-hypertension | ru | cardiovascular | WHO Hypertension + NIH MedlinePlus + CDC |
 | ru-diabetes-prevention | ru | diabetes | CDC DPP + NIH NIDDK + WHO |
 | ru-heartburn | ru | digestive | NIH NIDDK + NIH MedlinePlus |
 | ru-eczema | ru | skin | NIH NIAMS + NIH MedlinePlus |
 | ru-adult-vaccinations | ru | vaccination | CDC Adult Immunization + WHO |
 | ru-adult-screenings | ru | screening | CDC Preventive Care + USPSTF |
+| en-headache | en | symptoms | WHO Headache disorders + NIH MedlinePlus |
+| en-back-pain | en | symptoms | NICE NG59 + NIH MedlinePlus |
+| en-fatigue | en | symptoms | NIH MedlinePlus + CDC |
+| en-insomnia | en | sleep | CDC + AASM |
+| en-vitamin-d | en | nutrition | NIH ODS + EFSA |
+| en-iron-b12 | en | nutrition | NIH ODS + CDC |
+| en-hydration | en | nutrition | EFSA + CDC |
+| en-cardio-basics | en | activity | WHO + CDC |
+| en-strength-training | en | activity | WHO + CDC |
+| en-stretching | en | activity | NIH MedlinePlus + CDC |
+| en-stress | en | mental-health | NIH NIMH + CDC |
+| en-anxiety | en | mental-health | NIH NIMH + WHO |
+| en-meditation | en | mental-health | NIH NCCIH + CDC |
+| en-seasonal-cold | en | seasonal | CDC + NIH MedlinePlus |
+| en-seasonal-allergies | en | seasonal | CDC + NIH MedlinePlus |
 | en-hypertension | en | cardiovascular | WHO Hypertension + NIH MedlinePlus + CDC |
 | en-diabetes-prevention | en | diabetes | CDC DPP + NIH NIDDK + WHO |
 | en-heartburn | en | digestive | NIH NIDDK + NIH MedlinePlus |
 | en-eczema | en | skin | NIH NIAMS + NIH MedlinePlus |
 | en-adult-vaccinations | en | vaccination | CDC Adult Immunization + WHO |
 | en-adult-screenings | en | screening | CDC Preventive Care + USPSTF |
+| kk-headache | kk | symptoms | Translated from ru-headache |
+| kk-back-pain | kk | symptoms | Translated from ru-back-pain |
+| kk-fatigue | kk | symptoms | Translated from ru-fatigue |
+| kk-insomnia | kk | sleep | Translated from ru-insomnia |
+| kk-vitamin-d | kk | nutrition | Translated from ru-vitamin-d (NIH ODS + EFSA) |
+| kk-iron-b12 | kk | nutrition | Translated from en-iron-b12 (NIH ODS + CDC) |
+| kk-hydration | kk | nutrition | Translated from ru-hydration |
+| kk-cardio-basics | kk | activity | Translated from ru-cardio-basics |
+| kk-strength-training | kk | activity | Translated from ru-strength-training |
+| kk-stretching | kk | activity | Translated from ru-stretching |
+| kk-stress | kk | mental-health | Translated from ru-stress |
+| kk-anxiety | kk | mental-health | Translated from ru-anxiety |
+| kk-meditation | kk | mental-health | Translated from en-meditation |
+| kk-seasonal-cold | kk | seasonal | Translated from ru-seasonal-cold |
+| kk-seasonal-allergies | kk | seasonal | Translated from en-seasonal-allergies |
+| kk-hypertension | kk | cardiovascular | Translated from ru-hypertension |
+| kk-diabetes-prevention | kk | diabetes | Translated from ru-diabetes-prevention |
+| kk-heartburn | kk | digestive | Translated from ru-heartburn |
+| kk-eczema | kk | skin | Translated from ru-eczema |
+| kk-adult-vaccinations | kk | vaccination | Translated from ru-adult-vaccinations (sanitised) |
+| kk-adult-screenings | kk | screening | Translated from ru-adult-screenings (sanitised) |
 
-### Pending human review (kk)
+### Kazakh review status
 
-These six topics were intentionally **not** machine-translated into Kazakh. Medical terminology (especially around hypertension, diabetes, and vaccination schedules) benefits from a native reviewer before landing in the RAG corpus — translating first and reviewing "eventually" has created hard-to-catch drift in previous rounds. They are listed under `pending_translations` in `manifest.json` so they don't get lost:
-
-- kk-hypertension (from ru-hypertension)
-- kk-diabetes-prevention (from ru-diabetes-prevention)
-- kk-heartburn (from ru-heartburn)
-- kk-eczema (from ru-eczema)
-- kk-adult-vaccinations (from ru-adult-vaccinations)
-- kk-adult-screenings (from ru-adult-screenings)
-
-When adding these, follow the same pattern as the first wave of `kk-*` articles: translate from the ru source, have a native kk speaker review for clinical terminology, tag `review_status: "machine_translated"` until the human pass is complete, flip to `review_status: "reviewed"` afterwards.
+All 21 `kk-*` articles carry `review_status: "machine_translated"` in `manifest.json`. They have been pivoted from the Russian (or English, where Russian was unavailable) version and cross-checked against the underlying CDC/NIH/WHO source for clinical terminology, but they have **not** yet been validated by a native Kazakh speaker with medical familiarity. Medical content benefits from a native reviewer before landing in the RAG corpus — machine translation without review has created hard-to-catch drift on subtle clinical terminology in previous rounds. When a kk article is fully validated, flip `review_status` to `"reviewed"` in the manifest.
 
 ## Usage notes
 

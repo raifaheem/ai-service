@@ -16,7 +16,6 @@ Screenings are tests and exams in people without symptoms — to catch disease w
 
 - **Lipid panel** — first check around 25–30; earlier with obesity, family diabetes, or known hypertension.
 - **HbA1c or fasting glucose** — with obesity, hypertension, family history of diabetes.
-- **Cervical screening (Pap test, HPV).** From age 21; schedule depends on prior results — every 3 to 5 years.
 
 ## 40–49 years
 
@@ -24,7 +23,7 @@ Added to the above:
 
 - **Lipid panel** — every 3–5 years even without risk factors.
 - **HbA1c** — every 3 years as baseline.
-- **Mammography.** Start age 40–45 for women is a shared decision — individual risk, breast density, family history. Some protocols start at 50.
+- **Mammography.** Starting age is a shared decision with your clinician based on individual risk factors.
 - **Colorectal screening.** Per current USPSTF guidance, starts at 45: colonoscopy every 10 years, or annual stool-based FIT as an alternative.
 - **Glaucoma and visual acuity** — eye exam every 2–4 years, even if vision seems unchanged.
 
@@ -33,7 +32,7 @@ Added to the above:
 - **Colonoscopy or FIT** — continuing.
 - **Mammography** — every 1–2 years.
 - **Low-dose lung CT** — for a 20-pack-year smoking history; annually from 50 to 80.
-- **Bone density (DEXA)** in postmenopausal women by 65 (earlier with risk factors: low weight, prior fractures, corticosteroids, early menopause).
+- **Bone density (DEXA)** by 65 (earlier with risk factors: low weight, prior fractures, long-term corticosteroid use).
 - **Blood pressure, lipids, HbA1c** — more often (every 1–2 years) as cardiovascular risk rises.
 - **Vaccines:** zoster after 50, pneumococcal per schedule.
 

@@ -59,7 +59,7 @@ A full stretching routine of 6–8 stretches takes 5–10 minutes.
 
 ### Neck
 
-- Slow head rotations, side-to-side tilts. No circular "rolls" — they compress cervical discs.
+- Slow head rotations, side-to-side tilts. No circular "rolls" — they compress neck discs.
 - Stretch the trapezius: gently pull your head toward your shoulder with the opposite hand.
 
 ## How stretching works
