@@ -23,7 +23,9 @@ from __future__ import annotations
 import logging
 import math
 
-from .embeddings import embed_text
+from ..config import settings
+from .embeddings import embed_text, normalize_text_for_embedding
+from .openai_client import client
 
 logger = logging.getLogger(__name__)
 
@@ -97,20 +99,60 @@ def _cosine(a: list[float], b: list[float]) -> float:
 async def initialize_exemplar_embeddings() -> None:
     """Compute embeddings for every exemplar. Call from lifespan startup.
 
-    Non-fatal on failure — the service still runs, it just won't get the
-    fast path until the next successful initialization.
+    Best-effort: the service still runs without the fast path (intent
+    classification falls through to the LLM). To avoid blowing up the
+    OpenAI circuit breaker on cold-start network jitter we:
+      - issue ONE batch embedding request instead of N serial calls; and
+      - call `client.embeddings.create` directly, bypassing
+        `openai_call_guard`, so a startup failure can't trip the breaker
+        and degrade `/v1/chat` for the next 60s.
+
+    If the batch fails we log the traceback and leave `_exemplar_vectors`
+    empty — `fast_classify_intent` returns None in that state and intent
+    classification gracefully falls back to the LLM path.
     """
     global _exemplar_vectors
-    computed: dict[str, list[list[float]]] = {}
+
+    # Flat list paired with the (category, index) it came from so we can
+    # reassemble the dict-of-lists shape after the single batch call.
+    flat_texts: list[str] = []
+    origin: list[tuple[str, int]] = []
     for category, examples in INTENT_EXEMPLARS.items():
-        vectors: list[list[float]] = []
         for ex in examples:
-            try:
-                vec = await embed_text(ex)
-                vectors.append(vec)
-            except Exception:
-                logger.warning("Failed to embed exemplar %r for category %s", ex, category)
-        computed[category] = vectors
+            normalized = normalize_text_for_embedding(ex)
+            if not normalized:
+                continue
+            flat_texts.append(normalized)
+            origin.append((category, len(origin)))
+
+    if not flat_texts:
+        # Leave the cache empty so `is_initialized()` and
+        # `fast_classify_intent` both correctly report the fast-path as off.
+        _exemplar_vectors = {}
+        return
+
+    try:
+        resp = await client.embeddings.create(
+            model=settings.openai_embedding_model,
+            input=flat_texts,
+        )
+        vectors = [item.embedding for item in resp.data]
+    except Exception:
+        # logger.exception includes the traceback — vital for debugging
+        # cold-start failures that the old swallow-and-WARN hid.
+        logger.exception(
+            "intent_embeddings warmup failed — fast-path stays disabled, "
+            "intent classification will use the LLM path (degraded but functional). "
+            "This does NOT trip the OpenAI circuit breaker."
+        )
+        # Leave the cache empty so `is_initialized()` and
+        # `fast_classify_intent` both correctly report the fast-path as off.
+        _exemplar_vectors = {}
+        return
+
+    computed: dict[str, list[list[float]]] = {category: [] for category in INTENT_EXEMPLARS}
+    for (category, _), vec in zip(origin, vectors, strict=False):
+        computed[category].append(vec)
     _exemplar_vectors = computed
     logger.info(
         "Intent fast-path initialized: %d categories, %d total exemplars",

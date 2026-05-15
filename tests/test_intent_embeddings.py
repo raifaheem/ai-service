@@ -29,16 +29,49 @@ async def test_returns_none_before_initialization():
 
 
 async def test_initialize_populates_cache_for_all_categories():
-    async def _mock_embed(text: str) -> list[float]:
-        return _vec_for(text)
+    # initialize_exemplar_embeddings issues ONE batch request to
+    # `client.embeddings.create` and bypasses openai_call_guard (so cold-start
+    # network jitter can't trip the breaker). Mock returns one fake vector
+    # per exemplar in `flat_texts` order — the dict reassembly is what we test.
 
-    with patch("app.services.intent_embeddings.embed_text", new=_mock_embed):
+    class _Item:
+        def __init__(self, vec):
+            self.embedding = vec
+
+    class _Resp:
+        def __init__(self, items):
+            self.data = items
+
+    total = sum(len(v) for v in intent_embeddings.INTENT_EXEMPLARS.values())
+    fake_vectors = [[float(i), 0.0, 0.0, 0.0] for i in range(total)]
+    fake_resp = _Resp([_Item(v) for v in fake_vectors])
+
+    mock_create = AsyncMock(return_value=fake_resp)
+
+    with patch("app.services.intent_embeddings.client.embeddings.create", new=mock_create):
         await intent_embeddings.initialize_exemplar_embeddings()
 
     assert intent_embeddings.is_initialized()
+    # Exactly one batch call, not N serial calls.
+    mock_create.assert_called_once()
     for category in intent_embeddings.INTENT_EXEMPLARS:
         assert category in intent_embeddings._exemplar_vectors
         assert len(intent_embeddings._exemplar_vectors[category]) == len(intent_embeddings.INTENT_EXEMPLARS[category])
+
+
+async def test_initialize_failure_leaves_cache_empty_without_raising():
+    # A cold-start OpenAI failure must NOT crash lifespan and must NOT trip
+    # the breaker (call goes direct, no openai_call_guard). Service continues
+    # with the LLM path for intent classification.
+    with patch(
+        "app.services.intent_embeddings.client.embeddings.create",
+        new=AsyncMock(side_effect=ConnectionError("openai cold-start jitter")),
+    ):
+        await intent_embeddings.initialize_exemplar_embeddings()
+
+    # Cache stays empty — fast_classify_intent returns None.
+    assert intent_embeddings._exemplar_vectors == {}
+    assert not intent_embeddings.is_initialized()
 
 
 async def test_off_topic_message_hits_fast_path():

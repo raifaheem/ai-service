@@ -8,6 +8,7 @@ from qdrant_client.models import (
     Filter,
     FilterSelector,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -63,15 +64,32 @@ async def ensure_qdrant_collection() -> None:
                 f"but embedding model '{settings.openai_embedding_model}' requires {expected_size}. "
                 "Use another collection name or recreate the collection."
             )
-        return
+    else:
+        await client.create_collection(
+            collection_name=settings.qdrant_collection,
+            vectors_config=VectorParams(
+                size=expected_size,
+                distance=Distance.COSINE,
+            ),
+        )
 
-    await client.create_collection(
-        collection_name=settings.qdrant_collection,
-        vectors_config=VectorParams(
-            size=expected_size,
-            distance=Distance.COSINE,
-        ),
-    )
+    # Ensure payload indexes on the two fields we filter by. Qdrant Cloud
+    # refuses filter operations on un-indexed payload keys with HTTP 400
+    # ("Index required but not found"); legacy Qdrant <1.12 silently scanned.
+    # `create_payload_index` is idempotent — it no-ops if the index already
+    # exists with the same schema.
+    for field in ("source_id", "language"):
+        try:
+            await client.create_payload_index(
+                collection_name=settings.qdrant_collection,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except UnexpectedResponse as e:
+            # 409 = already exists with a different schema (not our case);
+            # log and continue so collection setup doesn't block startup.
+            if getattr(e, "status_code", None) not in (200, 201, 409):
+                raise
 
 
 async def upsert_text_chunks(chunks: list[dict], redis_client=None) -> int:
