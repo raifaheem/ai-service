@@ -47,6 +47,17 @@ def _extract_collection_vector_size(collection_info) -> int | None:
     return getattr(vectors, "size", None)
 
 
+async def _validate_collection_size(client, expected_size: int) -> None:
+    info = await client.get_collection(settings.qdrant_collection)
+    existing_size = _extract_collection_vector_size(info)
+    if existing_size is not None and existing_size != expected_size:
+        raise RuntimeError(
+            f"Qdrant collection '{settings.qdrant_collection}' has vector size {existing_size}, "
+            f"but embedding model '{settings.openai_embedding_model}' requires {expected_size}. "
+            "Use another collection name or recreate the collection."
+        )
+
+
 async def ensure_qdrant_collection() -> None:
     client = get_qdrant()
     expected_size = get_embedding_dimension()
@@ -55,23 +66,24 @@ async def ensure_qdrant_collection() -> None:
     existing_names = {c.name for c in collections.collections}
 
     if settings.qdrant_collection in existing_names:
-        info = await client.get_collection(settings.qdrant_collection)
-        existing_size = _extract_collection_vector_size(info)
-
-        if existing_size is not None and existing_size != expected_size:
-            raise RuntimeError(
-                f"Qdrant collection '{settings.qdrant_collection}' has vector size {existing_size}, "
-                f"but embedding model '{settings.openai_embedding_model}' requires {expected_size}. "
-                "Use another collection name or recreate the collection."
-            )
+        await _validate_collection_size(client, expected_size)
     else:
-        await client.create_collection(
-            collection_name=settings.qdrant_collection,
-            vectors_config=VectorParams(
-                size=expected_size,
-                distance=Distance.COSINE,
-            ),
-        )
+        try:
+            await client.create_collection(
+                collection_name=settings.qdrant_collection,
+                vectors_config=VectorParams(
+                    size=expected_size,
+                    distance=Distance.COSINE,
+                ),
+            )
+        except UnexpectedResponse as e:
+            # Race: multiple gunicorn workers boot in parallel and all see an
+            # empty get_collections() snapshot. One wins create_collection,
+            # the rest get 409 — without this catch the losers crash with exit
+            # code 3 and gunicorn's master shuts the whole deploy down.
+            if getattr(e, "status_code", None) != 409:
+                raise
+            await _validate_collection_size(client, expected_size)
 
     # Ensure payload indexes on the two fields we filter by. Qdrant Cloud
     # refuses filter operations on un-indexed payload keys with HTTP 400

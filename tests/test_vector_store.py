@@ -155,6 +155,60 @@ class TestEnsureQdrantCollection:
             with pytest.raises(RuntimeError, match="vector size"):
                 await ensure_qdrant_collection()
 
+    async def test_create_collection_409_race_validates_and_continues(self):
+        """When workers race at cold start, the loser's create_collection
+        gets 409. Must validate the existing collection's vector size and
+        continue, not crash the worker (exit code 3 takes the deploy down)."""
+        from qdrant_client.http.exceptions import UnexpectedResponse
+
+        mock_client = AsyncMock()
+        collections_response = MagicMock()
+        collections_response.collections = []  # empty at check time
+        mock_client.get_collections = AsyncMock(return_value=collections_response)
+
+        # Construct 409 without touching the constructor (varies across versions).
+        err = UnexpectedResponse.__new__(UnexpectedResponse)
+        err.status_code = 409
+        mock_client.create_collection = AsyncMock(side_effect=err)
+
+        info = MagicMock()
+        info.config.params.vectors.size = 1536  # winner created it with matching size
+        mock_client.get_collection = AsyncMock(return_value=info)
+
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.get_embedding_dimension", return_value=1536),
+        ):
+            from app.services.vector_store import ensure_qdrant_collection
+
+            await ensure_qdrant_collection()
+
+        mock_client.create_collection.assert_called_once()
+        mock_client.get_collection.assert_called()
+
+    async def test_create_collection_non_409_error_still_raises(self):
+        """Non-conflict errors (5xx, network) must still bubble — only 409 is
+        the race signal we know how to recover from."""
+        from qdrant_client.http.exceptions import UnexpectedResponse
+
+        mock_client = AsyncMock()
+        collections_response = MagicMock()
+        collections_response.collections = []
+        mock_client.get_collections = AsyncMock(return_value=collections_response)
+
+        err = UnexpectedResponse.__new__(UnexpectedResponse)
+        err.status_code = 500
+        mock_client.create_collection = AsyncMock(side_effect=err)
+
+        with (
+            patch("app.services.vector_store.get_qdrant", return_value=mock_client),
+            patch("app.services.vector_store.get_embedding_dimension", return_value=1536),
+        ):
+            from app.services.vector_store import ensure_qdrant_collection
+
+            with pytest.raises(UnexpectedResponse):
+                await ensure_qdrant_collection()
+
 
 # --------------- upsert_text_chunks ---------------
 
