@@ -60,7 +60,7 @@ kill_timeout = 35                   # > 30s graceful_timeout in gunicorn_conf.py
   force_https = true
   auto_stop_machines = "stop"       # stop machine after no traffic — free-tier saver
   auto_start_machines = true
-  min_machines_running = 0          # cold start ~5s, acceptable for low-traffic launch
+  min_machines_running = 1          # keep one warm to avoid 5–7s cold start on first POST
   processes = ["app"]
 
   [http_service.concurrency]
