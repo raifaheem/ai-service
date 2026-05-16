@@ -8,10 +8,10 @@ embedding cost (~10x less).
 
 Design choices:
 - Exemplars live in code (INTENT_EXEMPLARS) — deliberately small and curated.
-- Only the safe categories (off_topic, lifestyle, nutrition, fitness, sleep)
-  are served from the fast path. `emergency` always falls through to the LLM
-  — a false negative here is life-threatening, and an extra OpenAI call is
-  cheap insurance.
+- Only the safe categories (off_topic, lifestyle, nutrition, fitness, sleep,
+  meta) are served from the fast path. `emergency` always falls through to
+  the LLM — a false negative here is life-threatening, and an extra OpenAI
+  call is cheap insurance.
 - Embeddings are computed once at startup (`initialize_exemplar_embeddings`)
   and cached in module state.
 - Threshold 0.82 is empirical; tune with the golden-set evals (C.1) once
@@ -68,6 +68,27 @@ INTENT_EXEMPLARS: dict[str, list[str]] = {
         "why do i wake up tired",
         "почему я плохо сплю",
     ],
+    # Self-referential questions about the assistant itself. Greetings and
+    # small-talk ("how are you?", "как у тебя дела?") deliberately stay in
+    # off_topic — they're not capability questions.
+    "meta": [
+        "что ты умеешь",
+        "чем ты можешь помочь",
+        "на каком языке с тобой можно общаться",
+        "на каких языках ты отвечаешь",
+        "кто ты",
+        "представься",
+        "какие у тебя возможности",
+        "о чём с тобой можно говорить",
+        "what can you do",
+        "what are your capabilities",
+        "what languages do you speak",
+        "what topics can we discuss",
+        "who are you",
+        "introduce yourself",
+        "не істей аласың",
+        "қандай тілдерде сөйлесесің",
+    ],
 }
 
 # Per-category recommended risk level for fast-path results.
@@ -77,6 +98,7 @@ _FASTPATH_RISK = {
     "nutrition": "low",
     "fitness": "low",
     "sleep": "low",
+    "meta": "low",
 }
 
 # Empirical threshold — tune against golden-set evals.

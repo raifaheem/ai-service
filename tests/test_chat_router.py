@@ -348,6 +348,46 @@ class TestChatEndpoint:
         assert data["answer"] == OFF_TOPIC_MESSAGES["en"]
         assert data["intent"]["category"] == "off_topic"
 
+    async def test_chat_meta_question(self, mock_redis, mock_qdrant):
+        """meta-questions ('what can you do?') must reach the LLM with the meta addon,
+        NOT short-circuit through OFF_TOPIC_MESSAGES like off_topic does."""
+        mock_intent = IntentResult(
+            category="meta", confidence=0.95, requires_followup=False, detected_entities={}, risk_level="low"
+        )
+
+        llm_mock = AsyncMock(return_value="I'm a health assistant — I help with symptoms, nutrition, sleep, and more.")
+        with (
+            patch("app.services.redis_client._redis", mock_redis),
+            patch("app.services.redis_client.get_redis", return_value=mock_redis),
+            patch("app.services.vector_client._qdrant", mock_qdrant),
+            patch("app.services.vector_client.get_qdrant", return_value=mock_qdrant),
+            patch("app.services.vector_store.ensure_qdrant_collection", new_callable=AsyncMock),
+            patch("app.routers.chat.classify_intent", new_callable=AsyncMock, return_value=mock_intent),
+            patch("app.routers.chat.build_rag_context", new_callable=AsyncMock, return_value=("", [], None)),
+            patch("app.routers.chat.generate_health_answer", llm_mock),
+            patch("app.routers.chat.enforce_rate_limit", new_callable=AsyncMock),
+        ):
+            from app.main import app
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat",
+                    json={"message": "what can you help me with?", "locale": "en"},
+                    headers={"X-Service-Token": "test-token", "X-User-Id": "user-1"},
+                )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["answer"] != OFF_TOPIC_MESSAGES["en"]
+        assert "health assistant" in data["answer"]
+        assert data["intent"]["category"] == "meta"
+        # LLM must have been called (no short-circuit), and with the meta addon prompt.
+        assert llm_mock.await_count == 1
+        addon = llm_mock.await_args.kwargs.get("addon_prompt")
+        assert addon is not None
+        assert "META" in addon.upper()
+
     async def test_chat_no_auth(self, mock_redis, mock_qdrant):
         with (
             patch("app.services.redis_client._redis", mock_redis),

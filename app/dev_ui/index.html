@@ -144,6 +144,7 @@
   footer button:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .hint-corner { color: var(--muted); font-size: 11px; padding: 4px 16px; background: var(--panel); border-top: 1px solid var(--border); }
+  .target-prod { box-shadow: inset 0 0 0 1px #ffb86b; }
 </style>
 </head>
 <body>
@@ -152,6 +153,11 @@
   <h1>health-ai dev console</h1>
   <span class="ver">v1 / chat</span>
   <span class="spacer"></span>
+  <label for="target">target</label>
+  <select id="target" title="Where to send requests. 'prod' routes through a same-origin proxy on this dev server.">
+    <option value="local">local</option>
+    <option value="prod">prod</option>
+  </select>
   <label for="locale">locale</label>
   <select id="locale">
     <option value="ru">ru</option>
@@ -214,6 +220,7 @@ const els = {
   input:    document.getElementById("input"),
   send:     document.getElementById("send"),
   locale:   document.getElementById("locale"),
+  target:   document.getElementById("target"),
   token:    document.getElementById("token"),
   userId:   document.getElementById("userId"),
   newChat:  document.getElementById("newChat"),
@@ -224,10 +231,21 @@ const els = {
   settings: document.getElementById("settings"),
 };
 
+function chatStreamUrl() {
+  return els.target.value === "prod"
+    ? "/dev-ui/prod-proxy/v1/chat/stream"
+    : "/v1/chat/stream";
+}
+function applyTargetTheme() {
+  els.target.classList.toggle("target-prod", els.target.value === "prod");
+}
+
 // ---- State persisted in localStorage --------------------------------------
 els.token.value  = LS.get("service_token", "");
 els.userId.value = LS.get("user_id", "dev-ui-local");
 els.locale.value = LS.get("locale", "ru");
+els.target.value = LS.get("target", "local");
+applyTargetTheme();
 let conversationId = LS.get("conversation_id", "") || null;
 updateConvLabel();
 
@@ -237,6 +255,16 @@ if (!els.token.value) els.settings.open = true;
 els.token.addEventListener("input",  () => LS.set("service_token", els.token.value));
 els.userId.addEventListener("input", () => LS.set("user_id",       els.userId.value || "dev-ui-local"));
 els.locale.addEventListener("change",() => LS.set("locale",        els.locale.value));
+els.target.addEventListener("change",() => {
+  LS.set("target", els.target.value);
+  applyTargetTheme();
+  // Switching targets implies a different server-side conversation namespace —
+  // forget conversation_id so we don't get a 403 owner-mismatch on prod.
+  conversationId = null;
+  LS.del("conversation_id");
+  updateConvLabel();
+  setStatus("target → " + els.target.value);
+});
 
 // ---- Conversation log (kept for "Copy as Markdown") -----------------------
 const log = []; // [{ role: "user"|"assistant", text, meta? }]
@@ -258,7 +286,7 @@ function updateConvLabel() { els.convId.textContent = conversationId || "—"; }
 
 // ---- Markdown copy --------------------------------------------------------
 els.copyAll.onclick = async () => {
-  const lines = [`# health-ai dev session`, ``, `- locale: ${els.locale.value}`, `- conversation_id: ${conversationId || "—"}`, ``];
+  const lines = [`# health-ai dev session`, ``, `- target: ${els.target.value}`, `- locale: ${els.locale.value}`, `- conversation_id: ${conversationId || "—"}`, ``];
   for (const t of log) {
     lines.push(`## ${t.role}`);
     lines.push("");
@@ -393,7 +421,7 @@ async function streamChat(message) {
 
   let resp;
   try {
-    resp = await fetch("/v1/chat/stream", {
+    resp = await fetch(chatStreamUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

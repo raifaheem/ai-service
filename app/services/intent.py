@@ -21,6 +21,7 @@ VALID_CATEGORIES = {
     "sleep",
     "emergency",
     "general_health",
+    "meta",
     "off_topic",
     "sensitive_blocked",
 }
@@ -36,6 +37,7 @@ CATEGORY_TO_ADDON = {
     "mental_health": "mental_health",
     "emergency": "emergency",
     "general_health": None,
+    "meta": "meta",
     "off_topic": None,
     "sensitive_blocked": None,
 }
@@ -49,6 +51,7 @@ CATEGORY_TO_TEMPERATURE = {
     "nutrition": 0.5,
     "fitness": 0.5,
     "sleep": 0.5,
+    "meta": 0.3,
     "off_topic": 0.4,
     # Unused — sensitive_blocked short-circuits before LLM generation.
     "sensitive_blocked": 0.0,
@@ -56,7 +59,7 @@ CATEGORY_TO_TEMPERATURE = {
 
 CLASSIFY_SYSTEM_PROMPT = """You are a health query classifier. Analyze the user's message and return a JSON object with these fields:
 
-- "category": one of: symptom_check, lifestyle, nutrition, mental_health, fitness, sleep, emergency, general_health, off_topic, sensitive_blocked
+- "category": one of: symptom_check, lifestyle, nutrition, mental_health, fitness, sleep, emergency, general_health, meta, off_topic, sensitive_blocked
 - "confidence": float 0.0-1.0
 - "risk_level": one of: low, medium, high, emergency
 - "requires_followup": boolean — true if the message lacks detail for a useful answer
@@ -71,7 +74,8 @@ Classification rules:
 - "fitness": exercise, training, physical activity
 - "sleep": sleep quality, insomnia, sleep schedule
 - "general_health": general medical questions, prevention, checkups
-- "off_topic": not related to health at all (e.g. weather, sports scores, programming help)
+- "meta": user asks about the assistant itself — its purpose, capabilities, supported languages, identity, or what topics it covers. Greetings and small-talk like "how are you?" / "как у тебя дела?" are NOT meta — they stay off_topic.
+- "off_topic": not related to health and not asking about the assistant itself (e.g. weather, sports scores, programming help, recipes, small-talk greetings)
 - "sensitive_blocked": user is asking about sexually-explicit content (INCLUDING clinical questions about sexual organs, STIs/STDs, sexual function), profanity, recreational drug use (non-medication), or graphic violence/gore. Self-harm and suicidal ideation are NOT sensitive_blocked — they belong in "emergency" or "mental_health".
 
 Examples:
@@ -82,12 +86,19 @@ Examples:
 - "как пережить стресс" -> mental_health
 - "у меня болит голова" -> symptom_check
 - "как принимать ибупрофен" -> general_health (medication, not recreational drug)
+- "что ты умеешь?" -> meta
+- "на каком языке ты отвечаешь?" -> meta
+- "what can you help me with?" -> meta
+- "кто ты?" -> meta
+- "как у тебя дела?" -> off_topic (small-talk, NOT meta)
+- "напиши код на python" -> off_topic
+- "рецепт борща" -> off_topic
 
 Risk levels:
 - "emergency": life-threatening symptoms
 - "high": symptoms that need prompt medical attention (persistent severe pain, high fever, etc.)
 - "medium": symptoms worth monitoring or seeing a doctor about
-- "low": general wellness questions, lifestyle, off-topic, or sensitive_blocked
+- "low": general wellness questions, lifestyle, meta, off-topic, or sensitive_blocked
 
 Return ONLY valid JSON, no markdown formatting."""
 
@@ -119,7 +130,7 @@ def _default_intent() -> IntentResult:
     )
 
 
-_INTENT_CACHE_VERSION = "v3"
+_INTENT_CACHE_VERSION = "v4"
 
 
 def _build_cache_key(message: str, history_tail: list[dict], locale: str) -> str:
